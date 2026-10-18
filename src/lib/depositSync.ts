@@ -623,7 +623,7 @@ export function subscribeUserDepositsFromFirestore(
   };
 
   fetchBackendDeposits();
-  const pollInterval = setInterval(fetchBackendDeposits, 3500);
+  const pollInterval = setInterval(fetchBackendDeposits, 15000);
 
   // 3. BroadcastChannel listener for zero-latency multi-tab updates
   let bc: BroadcastChannel | null = null;
@@ -684,16 +684,13 @@ export function subscribeUserDepositsFromFirestore(
     window.addEventListener('forex_deposit_status_changed', handleLocalDepositStatus);
   }
 
-  // 5. Firestore real-time listener (optimized for user data isolation and quota)
-  let unsubFirestore: (() => void) | null = null;
+  // 5. Firestore real-time listener (optimized for both userUid and userEmail matching)
+  const unsubs: Array<() => void> = [];
   if (!isQuotaExceeded()) {
     try {
-      const q = cleanUid 
-        ? query(collection(db, 'deposits'), where('userUid', '==', cleanUid), limit(50))
-        : query(collection(db, 'deposits'), where('userEmail', '==', cleanEmail), limit(50));
-      unsubFirestore = onSnapshot(q, (snapshot) => {
+      const handleSnapshot = (snapshot: any) => {
         const loaded: TransactionRecord[] = [];
-        snapshot.forEach((snapDoc) => {
+        snapshot.forEach((snapDoc: any) => {
           const d = snapDoc.data();
           if (isUserMatch(d)) {
             loaded.push({
@@ -723,13 +720,18 @@ export function subscribeUserDepositsFromFirestore(
         if (loaded.length > 0) {
           emitUpdate(loaded);
         }
-      }, (err) => {
-        if (!isQuotaError(err)) {
-          console.warn('[depositSync] Firestore user deposits onSnapshot note:', err);
-        }
-      });
+      };
+
+      if (cleanUid) {
+        const qUid = query(collection(db, 'deposits'), where('userUid', '==', cleanUid), limit(50));
+        unsubs.push(onSnapshot(qUid, handleSnapshot, () => {}));
+      }
+      if (cleanEmail) {
+        const qEmail = query(collection(db, 'deposits'), where('userEmail', '==', cleanEmail), limit(50));
+        unsubs.push(onSnapshot(qEmail, handleSnapshot, () => {}));
+      }
     } catch (fsErr) {
-      console.warn('[depositSync] Firestore listener setup note:', fsErr);
+      console.warn('[depositSync] Firestore user deposits listener note:', fsErr);
     }
   }
 
@@ -742,9 +744,9 @@ export function subscribeUserDepositsFromFirestore(
       window.removeEventListener('forex_deposit_submitted', handleLocalDepositSubmitted);
       window.removeEventListener('forex_deposit_status_changed', handleLocalDepositStatus);
     }
-    if (unsubFirestore) {
-      unsubFirestore();
-    }
+    unsubs.forEach(u => {
+      try { u(); } catch (_) {}
+    });
   };
 }
 

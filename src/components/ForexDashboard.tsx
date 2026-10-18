@@ -59,20 +59,20 @@ import { Sidebar } from './Sidebar';
 import { TradingTerminalView, ActiveTrade } from './TradingTerminalView';
 import { TradeHistoryList } from './TradeHistoryList';
 
-// Code-split heavy modals and secondary views to reduce initial bundle by over 70% (<2s load)
-const TradeTypeModal = lazy(() => import('./TradeTypeModal').then(m => ({ default: m.TradeTypeModal })));
-const MarketsView = lazy(() => import('./MarketsView').then(m => ({ default: m.MarketsView })));
-const DepositModal = lazy(() => import('./DepositModal').then(m => ({ default: m.DepositModal })));
-const WithdrawModal = lazy(() => import('./WithdrawModal').then(m => ({ default: m.WithdrawModal })));
-const HelpLineModal = lazy(() => import('./HelpLineModal').then(m => ({ default: m.HelpLineModal })));
-const FeedbackModal = lazy(() => import('./FeedbackModal').then(m => ({ default: m.FeedbackModal })));
-const TradeHistoryModal = lazy(() => import('./TradeHistoryModal').then(m => ({ default: m.TradeHistoryModal })));
-const KYCModal = lazy(() => import('./KYCModal').then(m => ({ default: m.KYCModal })));
-const ChangePasswordModal = lazy(() => import('./ChangePasswordModal').then(m => ({ default: m.ChangePasswordModal })));
-const ShareReferralModal = lazy(() => import('./ShareReferralModal').then(m => ({ default: m.ShareReferralModal })));
-const MyReferralsModal = lazy(() => import('./MyReferralsModal').then(m => ({ default: m.MyReferralsModal })));
-const AvatarPickerModal = lazy(() => import('./AvatarPickerModal').then(m => ({ default: m.AvatarPickerModal })));
-const EditDemoBalanceModal = lazy(() => import('./EditDemoBalanceModal').then(m => ({ default: m.EditDemoBalanceModal })));
+// Eagerly import all dashboard modals so button clicks trigger in 0ms without network suspension or freezing
+import { TradeTypeModal } from './TradeTypeModal';
+import { MarketsView } from './MarketsView';
+import { DepositModal } from './DepositModal';
+import { WithdrawModal } from './WithdrawModal';
+import { HelpLineModal } from './HelpLineModal';
+import { FeedbackModal } from './FeedbackModal';
+import { TradeHistoryModal } from './TradeHistoryModal';
+import { KYCModal } from './KYCModal';
+import { ChangePasswordModal } from './ChangePasswordModal';
+import { ShareReferralModal } from './ShareReferralModal';
+import { MyReferralsModal } from './MyReferralsModal';
+import { AvatarPickerModal } from './AvatarPickerModal';
+import { EditDemoBalanceModal } from './EditDemoBalanceModal';
 import { 
   getStoredKycRequests, 
   getStoredNotifications, 
@@ -799,7 +799,7 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
           }
         }
       } catch (_) {}
-    }, 1500);
+    }, 12000);
 
     const handleFocusSync = async () => {
       if (!user?.uid) return;
@@ -864,8 +864,12 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
     } catch (_) {}
   }, [balances, user?.uid]);
 
+  const lastSavedActiveKeyRef = useRef<string>('');
   useEffect(() => {
     if (!user?.uid) return;
+    const sig = activeTrades.map(t => `${t.id}:${t.status}:${t.accountType}`).join('|');
+    if (sig === lastSavedActiveKeyRef.current) return;
+    lastSavedActiveKeyRef.current = sig;
     try {
       localStorage.setItem(`${ACTIVE_TRADES_KEY}_${user.uid}`, JSON.stringify(activeTrades));
     } catch (_) {}
@@ -878,10 +882,10 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
       registerSettledTradeIds(closedTrades.map(t => t.id));
     } catch (_) {}
 
-    // Rank recalculation automatically happens after trade close
+    // Rank recalculation only happens when trades actually close, never on floating ticks
     try {
-      const liveStats = calculateUserTodayProfit(closedTrades, activeTrades, 'live');
-      const bonusStats = calculateUserTodayProfit(closedTrades, activeTrades, 'bonus');
+      const liveStats = calculateUserTodayProfit(closedTrades, activeTradesRef.current || [], 'live');
+      const bonusStats = calculateUserTodayProfit(closedTrades, activeTradesRef.current || [], 'bonus');
       const traderObj = {
         uid: user.uid,
         email: user.email,
@@ -891,7 +895,7 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
       syncUserToGlobalLeaderboard(traderObj, liveStats, 'live').catch(() => {});
       syncUserToGlobalLeaderboard(traderObj, bonusStats, 'bonus').catch(() => {});
     } catch (_) {}
-  }, [closedTrades, activeTrades, user, userDisplayName, userAvatar]);
+  }, [closedTrades.length, user?.uid, userDisplayName, userAvatar]);
 
   // Global Background Engine: Binary OTC Trades Timer & Automatic Expiry Settlement
   useEffect(() => {
@@ -1228,7 +1232,7 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
     };
 
     syncTradesFromServer();
-    const tradePollTimer = setInterval(syncTradesFromServer, 4000);
+    const tradePollTimer = setInterval(syncTradesFromServer, 15000);
 
     return () => {
       unsubscribe();
@@ -1248,12 +1252,12 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
     }
   }, [closedTrades]);
 
-  // Automatic Clock / 8:00 AM Trading Day Rollover Engine: re-evaluates daily cycle continuously
+  // Automatic Clock / 8:00 AM Trading Day Rollover Engine: re-evaluates daily cycle every 60s gently
   const [currentDateReference, setCurrentDateReference] = useState<Date>(() => new Date());
   useEffect(() => {
     const timer = setInterval(() => {
       setCurrentDateReference(new Date());
-    }, 1000); // Ticks every 1 second to catch 8:00 AM rollover instantly without page reload
+    }, 60000); // Ticks gently every 60s, completely eliminating the 1-second CPU freezing loop
     return () => clearInterval(timer);
   }, []);
 
@@ -1329,7 +1333,7 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
 
         return changed ? updated : prev;
       });
-    }, 500);
+    }, 1500);
 
     return () => clearInterval(interval);
   }, [activeTrades.length, activeBottomNav]);
@@ -1432,11 +1436,13 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
         deduped.push(t);
       }
 
-      setTransactions(deduped);
-      if (user?.uid) {
-        try {
-          localStorage.setItem(`forex_transactions_${user.uid}`, JSON.stringify(deduped));
-        } catch (_) {}
+      if (deduped.length > 0) {
+        setTransactions(deduped);
+        if (user?.uid) {
+          try {
+            localStorage.setItem(`forex_transactions_${user.uid}`, JSON.stringify(deduped));
+          } catch (_) {}
+        }
       }
     };
 
@@ -1445,19 +1451,28 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
       fetch(`/api/user-transactions?userUid=${encodeURIComponent(user.uid)}&userEmail=${encodeURIComponent(user.email || '')}`)
         .then(res => res.json())
         .then(data => {
-          if (data.transactions && Array.isArray(data.transactions)) {
+          if (data && data.transactions && Array.isArray(data.transactions) && data.transactions.length > 0) {
             const deps = data.transactions.filter((t: any) => t.type === 'Deposit');
             const wds = data.transactions.filter((t: any) => t.type === 'Withdrawal');
-            if (deps.length > 0) userDeposits = mergeRecords(userDeposits, deps);
-            if (wds.length > 0) userWithdrawals = mergeRecords(userWithdrawals, wds);
-            updateCombined();
+            let hasNew = false;
+            if (deps.length > 0) {
+              userDeposits = mergeRecords(userDeposits, deps);
+              hasNew = true;
+            }
+            if (wds.length > 0) {
+              userWithdrawals = mergeRecords(userWithdrawals, wds);
+              hasNew = true;
+            }
+            if (hasNew) {
+              updateCombined();
+            }
           }
         })
         .catch(() => {});
     };
 
     fetchTransactions();
-    const txPollTimer = setInterval(fetchTransactions, 5000);
+    const txPollTimer = setInterval(fetchTransactions, 15000);
 
     const unsubDeposits = subscribeUserDepositsFromFirestore(user?.uid || '', user?.email || undefined, (deps) => {
       if (deps && deps.length > 0) {

@@ -533,7 +533,7 @@ export function subscribeUserWithdrawalsFromFirestore(
   };
 
   fetchBackendWithdrawals();
-  const pollInterval = setInterval(fetchBackendWithdrawals, 3500);
+  const pollInterval = setInterval(fetchBackendWithdrawals, 15000);
 
   // 3. BroadcastChannel listener for real-time status updates
   let bc: BroadcastChannel | null = null;
@@ -563,16 +563,13 @@ export function subscribeUserWithdrawalsFromFirestore(
     }
   } catch (_) {}
 
-  // 4. Firestore onSnapshot (optimized for user data isolation and quota)
-  let unsubFirestore: (() => void) | null = null;
+  // 4. Firestore onSnapshot (querying both userUid and userEmail)
+  const unsubs: Array<() => void> = [];
   if (!isQuotaExceeded()) {
     try {
-      const q = cleanUid 
-        ? query(collection(db, 'withdrawals'), where('userUid', '==', cleanUid), limit(50))
-        : query(collection(db, 'withdrawals'), where('userEmail', '==', cleanEmail), limit(50));
-      unsubFirestore = onSnapshot(q, (snapshot) => {
+      const handleSnapshot = (snapshot: any) => {
         const loaded: TransactionRecord[] = [];
-        snapshot.forEach((snapDoc) => {
+        snapshot.forEach((snapDoc: any) => {
           const d = snapDoc.data();
           if (isUserMatch(d)) {
             loaded.push({
@@ -600,11 +597,16 @@ export function subscribeUserWithdrawalsFromFirestore(
         if (loaded.length > 0) {
           emitUpdate(loaded);
         }
-      }, (err) => {
-        if (!isQuotaError(err)) {
-          console.warn('[withdrawalSync] Firestore user withdrawals listener note:', err);
-        }
-      });
+      };
+
+      if (cleanUid) {
+        const qUid = query(collection(db, 'withdrawals'), where('userUid', '==', cleanUid), limit(50));
+        unsubs.push(onSnapshot(qUid, handleSnapshot, () => {}));
+      }
+      if (cleanEmail) {
+        const qEmail = query(collection(db, 'withdrawals'), where('userEmail', '==', cleanEmail), limit(50));
+        unsubs.push(onSnapshot(qEmail, handleSnapshot, () => {}));
+      }
     } catch (fsErr) {
       console.warn('[withdrawalSync] Firestore listener setup note:', fsErr);
     }
@@ -615,9 +617,9 @@ export function subscribeUserWithdrawalsFromFirestore(
     if (bc) {
       bc.close();
     }
-    if (unsubFirestore) {
-      unsubFirestore();
-    }
+    unsubs.forEach(u => {
+      try { u(); } catch (_) {}
+    });
   };
 }
 
