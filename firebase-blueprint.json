@@ -1,0 +1,264 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Stores user registration and profile info for Forex Trade Pro",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth User UID"
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100,
+          "description": "User full name"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "User email address"
+        },
+        "phoneNumber": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 30,
+          "description": "Phone number with country code"
+        },
+        "country": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "description": "Country name"
+        },
+        "referralCode": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Optional referral code or referrer UID"
+        },
+        "referrerUid": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "UID of referring user account"
+        },
+        "referredBy": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Referrer UID or code for lookup"
+        },
+        "emailVerified": {
+          "type": "boolean",
+          "description": "Whether user email is verified"
+        },
+        "accountStatus": {
+          "type": "string",
+          "enum": ["active", "suspended", "pending"],
+          "description": "Account status"
+        },
+        "kycStatus": {
+          "type": "string",
+          "enum": ["pending", "verified", "rejected"],
+          "description": "KYC status"
+        },
+        "liveBalance": {
+          "type": "number",
+          "description": "Live trading account balance"
+        },
+        "bonusBalance": {
+          "type": "number",
+          "description": "Bonus trading account balance"
+        },
+        "demoBalance": {
+          "type": "number",
+          "description": "Demo trading account balance"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp"
+        }
+      },
+      "required": ["uid", "fullName", "email", "phoneNumber", "country", "accountStatus", "kycStatus"]
+    },
+    "Trade": {
+      "title": "Trade Position",
+      "description": "Stores individual open or closed trade position",
+      "type": "object",
+      "properties": {
+        "userUid": { "type": "string" },
+        "accountType": { "type": "string", "enum": ["live", "bonus", "demo"] },
+        "tradingMode": { "type": "string", "enum": ["forex", "otc"] },
+        "symbol": { "type": "string" },
+        "type": { "type": "string", "enum": ["BUY", "SELL", "UP", "DOWN"] },
+        "amount": { "type": "number" },
+        "entryPrice": { "type": "number" },
+        "currentPrice": { "type": "number" },
+        "pnl": { "type": "number" },
+        "status": { "type": "string", "enum": ["OPEN", "WON", "LOST", "CLOSED"] },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["userUid", "accountType", "tradingMode", "symbol", "type", "amount", "entryPrice", "pnl", "status"]
+    },
+    "MarketCandle": {
+      "title": "Market Candlestick History",
+      "description": "Stores permanent historical candlestick records per market and timeframe",
+      "type": "object",
+      "properties": {
+        "symbol": { "type": "string" },
+        "timeframe": { "type": "string" },
+        "time": { "type": "number" },
+        "open": { "type": "number" },
+        "high": { "type": "number" },
+        "low": { "type": "number" },
+        "close": { "type": "number" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["symbol", "timeframe", "time", "open", "high", "low", "close"]
+    },
+    "SystemSettings": {
+      "title": "System Settings & Deposit Configuration",
+      "description": "Stores global deposit gateway configurations and bonus rules",
+      "type": "object",
+      "properties": {
+        "gateways": { "type": "array" },
+        "rules": { "type": "object" },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "DepositRequest": {
+      "title": "Deposit Request",
+      "description": "Stores user deposit request with payment proof screenshot and transaction hash",
+      "type": "object",
+      "properties": {
+        "userUid": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "amount": { "type": "number" },
+        "bonusAmount": { "type": "number" },
+        "method": { "type": "string" },
+        "trxId": { "type": "string" },
+        "proofScreenshot": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["amount", "method", "trxId", "status"]
+    },
+    "WithdrawalRequest": {
+      "title": "Withdrawal Request",
+      "description": "Stores user withdrawal request with destination address and transaction details",
+      "type": "object",
+      "properties": {
+        "userUid": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "accountType": { "type": "string" },
+        "amount": { "type": "number" },
+        "method": { "type": "string" },
+        "destinationAddress": { "type": "string" },
+        "status": { "type": "string" },
+        "trxId": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["amount", "method", "destinationAddress", "status"]
+    },
+    "KYCRequest": {
+      "title": "KYC Verification Request",
+      "description": "Stores user National ID card photos and compliance validation info",
+      "type": "object",
+      "properties": {
+        "userUid": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "userName": { "type": "string" },
+        "nidNumber": { "type": "string" },
+        "nidFrontUrl": { "type": "string" },
+        "nidBackUrl": { "type": "string" },
+        "status": { "type": "string" },
+        "submittedAt": { "type": "string" }
+      },
+      "required": ["userUid", "status"]
+    },
+    "Notification": {
+      "title": "User Notification",
+      "description": "Stores transaction and account status update notifications for users",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string" },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "title", "message"]
+    },
+    "GlobalLeaderboard": {
+      "title": "Global Leaderboard",
+      "description": "Stores global Top 20 rankings synchronized in real-time across all users",
+      "type": "object",
+      "properties": {
+        "accountType": { "type": "string", "enum": ["live", "bonus"] },
+        "top20": { "type": "array" },
+        "lastUpdated": { "type": "number" }
+      },
+      "required": ["accountType", "top20", "lastUpdated"]
+    },
+    "LeaderboardTrader": {
+      "title": "Leaderboard Participant Record",
+      "description": "Stores individual trader performance record for leaderboard ranking calculations",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "username": { "type": "string" },
+        "accountType": { "type": "string" },
+        "todayProfit": { "type": "number" },
+        "winRate": { "type": "number" },
+        "totalTrades": { "type": "number" },
+        "lastUpdated": { "type": "number" }
+      },
+      "required": ["userId", "username", "accountType", "todayProfit", "lastUpdated"]
+    }
+  },
+  "firestore": {
+    "/global_leaderboard/{accountType}": {
+      "schema": "#/entities/GlobalLeaderboard",
+      "description": "Master synchronized top 20 rankings for live and bonus accounts"
+    },
+    "/leaderboard_traders/{traderKey}": {
+      "schema": "#/entities/LeaderboardTrader",
+      "description": "Individual trader today profit and metrics for leaderboard calculation"
+    },
+    "/users/{userId}": {
+      "schema": "#/entities/UserProfile",
+      "description": "Collection storing individual user profiles"
+    },
+    "/trades/{tradeId}": {
+      "schema": "#/entities/Trade",
+      "description": "Collection storing user trades"
+    },
+    "/market_candles/{marketKey}": {
+      "description": "Master synchronized market candle state containing active candle and recent series for real-time listener updates"
+    },
+    "/market_candles/{marketKey}/candles/{candleId}": {
+      "schema": "#/entities/MarketCandle",
+      "description": "Sub-collection storing permanent historical candlestick data for each market and timeframe"
+    },
+    "/settings/{settingId}": {
+      "schema": "#/entities/SystemSettings",
+      "description": "Stores global configuration settings such as payment gateways"
+    },
+    "/deposits/{depositId}": {
+      "schema": "#/entities/DepositRequest",
+      "description": "Collection storing deposit requests with payment proof screenshots"
+    },
+    "/withdrawals/{withdrawalId}": {
+      "schema": "#/entities/WithdrawalRequest",
+      "description": "Collection storing withdrawal requests"
+    },
+    "/kyc_requests/{kycId}": {
+      "schema": "#/entities/KYCRequest",
+      "description": "Collection storing user KYC verification documents"
+    },
+    "/notifications/{notifId}": {
+      "schema": "#/entities/Notification",
+      "description": "Collection storing user in-app notifications"
+    }
+  }
+}

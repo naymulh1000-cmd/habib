@@ -1,0 +1,63 @@
+# Robots.txt for FXBY24 Platform
+# Protect proprietary systems and block third-party scam scrapers / automated reputation bots
+
+User-agent: *
+Allow: /
+Allow: /login
+Allow: /register
+Allow: /signup
+Allow: /about
+Allow: /leaderboard
+Allow: /markets
+Allow: /favicon.ico
+Allow: /logo.png
+Allow: /icon*.png
+Allow: /manifest.json
+Disallow: /admin
+Disallow: /admin/*
+Disallow: /api/
+Disallow: /api/*
+Disallow: /terminal
+Disallow: /dashboard
+Disallow: /wallet
+Disallow: /deposit
+Disallow: /withdraw
+Disallow: /*?*token=*
+Disallow: /*?*admin=*
+
+# Block automated scraper bots and scam auditor scrapers
+User-agent: ScamAdviserBot
+Disallow: /
+
+User-agent: ScamDetectorBot
+Disallow: /
+
+User-agent: GridinsoftBot
+Disallow: /
+
+User-agent: AhrefsBot
+Disallow: /
+
+User-agent: SemrushBot
+Disallow: /
+
+User-agent: DotBot
+Disallow: /
+
+User-agent: MJ12bot
+Disallow: /
+
+User-agent: PetalBot
+Disallow: /
+
+User-agent: BLEXBot
+Disallow: /
+
+User-agent: DataForSeoBot
+Disallow: /
+
+User-agent: Screaming Frog SEO Spider
+Disallow: /
+
+Sitemap: https://fxby24.com/sitemap.xml
+

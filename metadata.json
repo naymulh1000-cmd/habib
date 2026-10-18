@@ -1,0 +1,6 @@
+{
+  "name": "Forex Trade Pro",
+  "description": "FXBY24 is a premier digital trading platform offering advanced market intelligence, multi-asset analytics, and high-performance charting technology for modern global traders.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

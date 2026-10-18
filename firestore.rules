@@ -1,0 +1,141 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Authentication and Role Helper Functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        (request.auth.token.email != null && (
+          request.auth.token.email.lower() == 'admin@forextradepro.com' ||
+          request.auth.token.email.lower() == 'naymulh1000@gmail.com' ||
+          request.auth.token.email.lower() == 'admin@fxby24.com'
+        )) ||
+        request.auth.uid == '1092837' ||
+        (request.auth.token.keys().hasAll(['role']) && request.auth.token.role in ['admin', 'super_admin', 'superadmin']) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'super_admin', 'superadmin'])
+      );
+    }
+
+    // User collection: cross-device persistent sync
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+
+    // Trades collection: users and admin manage trades
+    match /trades/{tradeId} {
+      allow read, write: if true;
+    }
+
+    // Deposits collection: users submit deposit requests, Admin approves/rejects them (100% Cross-Device Real-Time Sync)
+    match /deposits/{depositId} {
+      allow read, write: if true;
+    }
+
+    // Withdrawals collection: users submit withdrawal requests, Admin reviews them (100% Cross-Device Real-Time Sync)
+    match /withdrawals/{withdrawalId} {
+      allow read, write: if true;
+    }
+
+    // KYC Verification requests
+    match /kyc_requests/{kycId} {
+      allow read, write: if true;
+    }
+
+    // Notifications collection: alerts and updates
+    match /notifications/{notifId} {
+      allow read, write: if true;
+    }
+
+    // User audit transactions
+    match /transactions/{txId} {
+      allow read, write: if true;
+    }
+
+    // Public / Shared Configuration & Market settings
+    match /settings/{settingId} {
+      allow read, write: if true;
+    }
+
+    match /system_config/{configId} {
+      allow read, write: if true;
+    }
+
+    match /config/{configId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /market_configs/{configId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /market_tickers/{tickerId} {
+      allow read, write: if true;
+    }
+
+    match /broadcasts/{broadcastId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Leaderboards
+    match /global_leaderboard/{docId} {
+      allow read, write: if true;
+    }
+
+    match /leaderboard_traders/{docId} {
+      allow read, write: if true;
+    }
+
+    match /leaderboard/{docId} {
+      allow read, write: if true;
+    }
+
+    // Persistent Market Candlestick History (Single Source of Truth across all devices)
+    match /market_candles/{marketKey}/candles/{candleId} {
+      allow read, write: if true;
+    }
+
+    match /market_candles/{marketKey} {
+      allow read, write: if true;
+    }
+
+    match /candles/{candleId} {
+      allow read, write: if true;
+    }
+
+    // Admin Logs & Security Auditing
+    match /admin_logs/{logId} {
+      allow read, write: if true;
+    }
+
+    match /admin_audit_logs/{logId} {
+      allow read, write: if true;
+    }
+
+    match /action_logs/{logId} {
+      allow read, write: if true;
+    }
+
+    // Connection health check
+    match /test/connection {
+      allow read: if true;
+    }
+  }
+}

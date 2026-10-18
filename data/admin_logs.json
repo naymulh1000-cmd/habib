@@ -1,0 +1,41 @@
+[
+  {
+    "action": "REJECT_WITHDRAWAL",
+    "withdrawalId": "TEST-WD-001",
+    "amount": 25,
+    "reason": "Test Withdrawal Rejection",
+    "timestamp": "2026-10-10T18:02:48.863Z"
+  },
+  {
+    "action": "REJECT_DEPOSIT",
+    "depositId": "TEST-DEP-001",
+    "amount": 10,
+    "reason": "Test Rejection",
+    "timestamp": "2026-10-10T18:02:40.626Z"
+  },
+  {
+    "action": "APPROVE_DEPOSIT",
+    "depositId": "TEST-DP-101",
+    "trxId": "TRXTEST999",
+    "amount": 50,
+    "userUid": "test-user-1",
+    "approvedBy": "Admin",
+    "timestamp": "2026-09-07T09:33:24.405Z"
+  },
+  {
+    "action": "NEW_DEPOSIT_SUBMITTED",
+    "depositId": "TEST-DP-101",
+    "trxId": "TRXTEST999",
+    "amount": 50,
+    "userEmail": "test@example.com",
+    "timestamp": "2026-09-07T09:33:14.121Z"
+  },
+  {
+    "action": "NEW_DEPOSIT_SUBMITTED",
+    "depositId": "DP-TEST1-123",
+    "trxId": "TRX_TEST_999",
+    "amount": 100,
+    "userEmail": "test@test.com",
+    "timestamp": "2026-09-07T09:20:24.792Z"
+  }
+]

@@ -1,0 +1,35 @@
+[
+  {
+    "uid": "K035i2tnEWci3Tcv4DTbLEcYJVX2",
+    "displayUserId": "151113",
+    "email": "naymulh1000@gmail.com",
+    "displayName": "NAYMUL HASSAN",
+    "fullName": "NAYMUL HASSAN",
+    "phoneNumber": "",
+    "country": "Global",
+    "isVerifiedUser": true,
+    "isBlocked": false,
+    "accountStatus": "active",
+    "kycStatus": "verified",
+    "role": "super_admin",
+    "balances": {
+      "live": 3258.43,
+      "bonus": 1499.1,
+      "demo": 5000
+    },
+    "todayProfit": 0,
+    "todayLoss": 0,
+    "floatingPnl": 0,
+    "usedMargin": 0,
+    "createdAt": "2026-09-23T08:04:25.919Z",
+    "lastLoginAt": "2026-09-23T08:04:25.919Z",
+    "liveBalance": 3258.43,
+    "bonusBalance": 1499.1,
+    "demoBalance": 5000,
+    "referralCode": null,
+    "referrerUid": null,
+    "referredBy": null,
+    "registeredAt": 1790150666508,
+    "updatedAt": 1790151259713
+  }
+]
