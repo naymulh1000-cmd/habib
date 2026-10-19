@@ -125,6 +125,52 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
     }
   }, [selectedTradingMarketId]);
 
+  // Fast Initial Synchronization Progress Engine (1% -> 80% in 10s, then 80% -> 100% in next 10-12s)
+  const [syncProgress, setSyncProgress] = useState<number>(1);
+  const [syncStatusText, setSyncStatusText] = useState<string>('Initializing Secure Node...');
+  const [isInitialSyncComplete, setIsInitialSyncComplete] = useState<boolean>(false);
+
+  useEffect(() => {
+    let current = 1;
+    let timerId: any = null;
+
+    const tick = () => {
+      // First phase: 1% to 80% completes in exactly ~10 seconds (~125ms per tick)
+      // Second phase: 81% to 100% completes steadily in ~10-11 seconds (~550ms per tick)
+      const nextDelay = current < 80 ? 125 : 550;
+      current = Math.min(100, current + 1);
+      setSyncProgress(current);
+
+      if (current < 20) {
+        setSyncStatusText('Initializing High-Speed Trading Engine...');
+      } else if (current < 45) {
+        setSyncStatusText('Connecting to Global Market Liquidity...');
+      } else if (current < 70) {
+        setSyncStatusText('Synchronizing Real-Time Forex & OTC Feeds...');
+      } else if (current < 85) {
+        setSyncStatusText('Verifying Encrypted Wallet Balances...');
+      } else if (current < 99) {
+        setSyncStatusText('Optimizing Interactive Trading Workspace...');
+      } else {
+        setSyncStatusText('Terminal Synchronized 100% • Opening Workspace...');
+      }
+
+      if (current >= 100) {
+        setTimeout(() => {
+          setIsInitialSyncComplete(true);
+        }, 220);
+      } else {
+        timerId = setTimeout(tick, nextDelay);
+      }
+    };
+
+    timerId = setTimeout(tick, 125);
+
+    return () => {
+      if (timerId) clearTimeout(timerId);
+    };
+  }, []);
+
   // Account Type Selection: Demo, Live, Bonus (Default to bonus to match screenshot)
   const [accountType, setAccountType] = useState<AccountType>('bonus');
   const [isAccountSelectorOpen, setIsAccountSelectorOpen] = useState(false);
@@ -1573,6 +1619,102 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
 
   return (
     <div className="min-h-screen w-full bg-[#06080E] text-white flex flex-col lg:flex-row font-sans pb-20 lg:pb-0 selection:bg-[#F5B301] selection:text-black">
+      
+      {/* 0. HIGH-TECH 0-100% SYNCHRONIZATION OVERLAY */}
+      <AnimatePresence>
+        {!isInitialSyncComplete && (
+          <motion.div
+            key="dashboard-sync-overlay"
+            initial={{ opacity: 1 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0, scale: 0.98 }}
+            transition={{ duration: 0.35, ease: 'easeInOut' }}
+            className="fixed inset-0 z-[100] flex flex-col items-center justify-center p-6 bg-[#06080E]/98 backdrop-blur-2xl select-none"
+          >
+            {/* Ambient Background Glows */}
+            <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-80 sm:w-96 h-80 sm:h-96 rounded-full bg-[#F5B301]/10 blur-[100px] pointer-events-none" />
+            <div className="absolute bottom-1/4 left-1/2 -translate-x-1/2 w-64 h-64 rounded-full bg-cyan-500/10 blur-[90px] pointer-events-none" />
+
+            <div className="relative z-10 w-full max-w-sm flex flex-col items-center text-center space-y-5">
+              {/* Brand Logo with Slim Animated Circular Orbit Rings (চিকন রাউন্ড এনিমেশন) */}
+              <div className="relative flex flex-col items-center">
+                <div className="relative w-24 h-24 sm:w-28 sm:h-28 flex items-center justify-center">
+                  {/* Outer Slim Rotating Dashed Gold Ring (চিকন সোনালি ড্যাশড রিং) */}
+                  <div className="absolute inset-0 rounded-full border-[1.5px] border-dashed border-[#F5B301]/80 animate-[spin_4.5s_linear_infinite] pointer-events-none" />
+                  
+                  {/* Middle Slim Rotating Cyan Gradient Orbit with Luminous Head (চিকন নিয়ন সায়ান রিং) */}
+                  <div className="absolute inset-1.5 sm:inset-2 rounded-full border-[1.5px] border-cyan-400/40 border-t-cyan-300 border-r-transparent animate-[spin_3s_linear_infinite_reverse] pointer-events-none shadow-[0_0_10px_rgba(34,211,238,0.25)]" />
+
+                  {/* Inner Fine Gold Orbital Halo */}
+                  <div className="absolute inset-3 sm:inset-3.5 rounded-full border-[1px] border-[#F5B301]/30 border-b-[#F5B301] border-l-transparent animate-[spin_6s_linear_infinite] pointer-events-none" />
+
+                  {/* Subtle Ambient Pulsing Glow */}
+                  <div className="absolute inset-2 sm:inset-3 rounded-full bg-gradient-to-tr from-[#F5B301]/20 via-amber-500/10 to-cyan-500/15 blur-md animate-pulse pointer-events-none" />
+
+                  {/* Core 3D Brand Logo Emblem (Remains perfectly centered and steady) */}
+                  <div className="relative w-15 h-15 sm:w-18 sm:h-18 rounded-2xl bg-gradient-to-b from-[#141E34] to-[#0A0E18] border border-[#F5B301]/70 flex items-center justify-center shadow-2xl shadow-[#F5B301]/30 p-2 z-10">
+                    <BrandLogo size="2xl" showText={false} className="w-full h-full flex items-center justify-center" />
+                  </div>
+                </div>
+
+                {/* Brand Name Typography */}
+                <div className="mt-4 space-y-1">
+                  <div className="flex items-center justify-center gap-1.5 text-xl sm:text-2xl font-black tracking-wider drop-shadow-md">
+                    <span className="text-white">FXBY24</span>
+                    <span className="text-[#F5B301]">TRADING PRO</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* High-Tech Progress Bar & Percentage */}
+              <div className="w-full space-y-2 pt-1">
+                {/* Progress Bar Container */}
+                <div className="w-full h-3.5 rounded-full bg-black/70 border border-white/10 p-0.5 overflow-hidden shadow-inner relative">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-amber-600 via-[#F5B301] to-emerald-400 shadow-lg shadow-[#F5B301]/40 transition-all duration-100 ease-out relative overflow-hidden"
+                    style={{ width: `${syncProgress}%` }}
+                  >
+                    <div className="absolute inset-0 bg-white/20 animate-pulse" />
+                  </div>
+                </div>
+
+                {/* Percentage & Status Labels */}
+                <div className="flex items-center justify-between text-xs px-1 font-mono">
+                  <span className="text-[11px] font-bold text-gray-400 flex items-center gap-1.5 font-sans">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
+                    {syncProgress < 100 ? 'Synchronizing...' : 'Complete!'}
+                  </span>
+                  <span className="text-sm font-black text-[#F5B301] tracking-wider">
+                    {syncProgress}%
+                  </span>
+                </div>
+
+                {/* Prominent "Please Wait, Loading..." Status Banner */}
+                <div className="flex flex-col items-center justify-center gap-1 pt-2">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-[#F5B301] animate-ping" />
+                    <span className="text-xs sm:text-sm font-black text-[#F5B301] tracking-wider uppercase font-sans animate-pulse drop-shadow">
+                      Please Wait, Loading...
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-gray-400 font-medium min-h-[16px]">
+                    {syncStatusText}
+                  </p>
+                </div>
+              </div>
+
+              {/* Subtle Trust Indicators */}
+              <div className="flex items-center justify-center gap-3 pt-3 text-[10px] text-gray-500 font-mono border-t border-white/5 w-full">
+                <span>🔒 256-Bit SSL</span>
+                <span>•</span>
+                <span>⚡ Sub-Millisecond OTC</span>
+                <span>•</span>
+                <span>✓ Active Node</span>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       
       {/* Desktop Sidebar */}
       <Sidebar

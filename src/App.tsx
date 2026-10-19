@@ -29,7 +29,7 @@ const lazyWithRetry = (importFn: () => Promise<any>, exportName?: string) =>
     throw new Error('Module import retry limit exceeded');
   });
 
-const ForexDashboard = lazyWithRetry(() => import('./components/ForexDashboard'), 'ForexDashboard');
+import { ForexDashboard } from './components/ForexDashboard';
 const AdminLoginCard = lazyWithRetry(() => import('./components/AdminPanel/AdminLoginCard'), 'AdminLoginCard');
 const AdminDashboard = lazyWithRetry(() => import('./components/AdminPanel/AdminDashboard'), 'AdminDashboard');
 
@@ -593,25 +593,17 @@ export default function App() {
       {/* Main Container */}
       <main className={`relative z-10 flex-1 w-full ${user ? '' : 'flex items-center justify-center p-4 sm:p-6 my-auto'}`}>
         {user ? (
-          <Suspense fallback={
-            <div className="min-h-[60vh] flex flex-col items-center justify-center p-6 text-center">
-              <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-[#F5B301]/20 to-blue-500/20 border border-white/10 flex items-center justify-center mb-3">
-                <Loader2 className="w-6 h-6 animate-spin text-[#F5B301]" />
-              </div>
-              <span className="text-xs font-semibold text-gray-400">Loading Trading Workspace...</span>
-            </div>
-          }>
-            <ForexDashboard 
-              user={user} 
-              isSuperAdmin={isSuperAdmin}
-              onSwitchToAdmin={handleSwitchToAdmin}
-              onLogout={() => {
-                signOut(auth).catch((err) => console.warn('Sign out notice:', err));
-                setUser(null);
-                setVisitorView('portal');
-              }} 
-            />
-          </Suspense>
+          <ForexDashboard 
+            user={user} 
+            isSuperAdmin={isSuperAdmin}
+            onSwitchToAdmin={handleSwitchToAdmin}
+            onLogout={() => {
+              signOut(auth).catch((err) => console.warn('Sign out notice:', err));
+              try { sessionStorage.removeItem('forex_dashboard_synced'); } catch (_) {}
+              setUser(null);
+              setVisitorView('portal');
+            }} 
+          />
         ) : (
           <GlassLoginCard 
             initialMode={authInitialMode}
