@@ -2686,19 +2686,20 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
     }
 
     const initCandles = async () => {
-      // Deep history buffers: 2 days for OTC, 7 days for Live market
+      // Ultra-fast lightweight initial candle buffer (70-130 candles for instant 0.1s mobile rendering)
+      // Older historical bars smoothly lazy-load when user scrolls/drags left
       const isReal = activeMarket.isRealMarket || activeMarket.category !== 'otc';
-      let candleCount = isReal ? 1000 : 800;
+      let candleCount = 120;
       switch (timeframe) {
         case 'S1':
-        case 'S5': candleCount = 400; break;
-        case 'S15': candleCount = 500; break;
-        case 'S30': candleCount = 600; break;
-        case 'M1': candleCount = isReal ? 1200 : 900; break;
-        case 'M5': candleCount = isReal ? 1000 : 700; break;
-        case 'M15': candleCount = isReal ? 700 : 500; break;
-        case 'H1': candleCount = isReal ? 500 : 350; break;
-        default: candleCount = 600; break;
+        case 'S5': candleCount = 90; break;
+        case 'S15':
+        case 'S30': candleCount = 100; break;
+        case 'M1': candleCount = 130; break;
+        case 'M5': candleCount = 110; break;
+        case 'M15': candleCount = 90; break;
+        case 'H1': candleCount = 70; break;
+        default: candleCount = 100; break;
       }
 
       customMarketEngine.setActiveViewedSymbol(activeMarket.symbol);

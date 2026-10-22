@@ -97,7 +97,7 @@ export function initGoldLiveStream() {
  */
 export async function loadOrInitializeGoldCandles(
   timeframe: string,
-  requiredCount: number = 150
+  requiredCount: number = 120
 ): Promise<Candlestick[]> {
   const symbol = 'XAU/USD';
   const tfSecs = getTimeframeSeconds(timeframe);

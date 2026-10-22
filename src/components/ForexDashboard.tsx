@@ -152,9 +152,9 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
     let timerId: any = null;
 
     const tick = () => {
-      // Dynamic progressive increments: rapid rise to 80% in ~700ms, then steady finish to 100% in ~900ms
-      const increment = current < 30 ? 4 : current < 75 ? 3 : current < 92 ? 2 : 1;
-      const nextDelay = current < 80 ? 25 : 55;
+      // Rapid, silky smooth 1.2-second progressive sync
+      const increment = current < 40 ? 6 : current < 80 ? 4 : current < 95 ? 3 : 2;
+      const nextDelay = current < 80 ? 18 : 35;
       current = Math.min(100, current + increment);
       setSyncProgress(current);
 
@@ -176,13 +176,13 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
         try { sessionStorage.setItem('forex_dashboard_synced', 'true'); } catch (_) {}
         setTimeout(() => {
           setIsInitialSyncComplete(true);
-        }, 180);
+        }, 120);
       } else {
         timerId = setTimeout(tick, nextDelay);
       }
     };
 
-    timerId = setTimeout(tick, 20);
+    timerId = setTimeout(tick, 15);
 
     return () => {
       if (timerId) clearTimeout(timerId);

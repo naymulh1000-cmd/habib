@@ -542,10 +542,10 @@ export function generateDeterministicCandleRange(
 export async function loadOrInitializeCandles(
   market: MarketPairConfig | CoinAsset | any,
   timeframe: string,
-  requiredCount: number = 150
+  requiredCount: number = 120
 ): Promise<Candlestick[]> {
   if (market?.symbol === 'XAU/USD' || market?.id === 'xau_usd') {
-    return loadOrInitializeGoldCandles(timeframe, requiredCount);
+    return loadOrInitializeGoldCandles(timeframe, Math.min(requiredCount, 120));
   }
 
   // Authoritative OTC Binary Options Markets check
@@ -562,7 +562,7 @@ export async function loadOrInitializeCandles(
   if (!isOtc && market?.isRealMarket && market?.category !== 'otc') {
     const marketKey = getMarketKey(market.symbol, timeframe);
     const cachedMem = candleMemoryCache[marketKey];
-    if (cachedMem && cachedMem.length >= Math.min(requiredCount, 60)) {
+    if (cachedMem && cachedMem.length >= Math.min(requiredCount, 40)) {
       return cachedMem;
     }
 
