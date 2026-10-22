@@ -29,11 +29,11 @@ const lazyWithRetry = (importFn: () => Promise<any>, exportName?: string) =>
     throw new Error('Module import retry limit exceeded');
   });
 
-import { ForexDashboard } from './components/ForexDashboard';
+const ForexDashboard = lazyWithRetry(() => import('./components/ForexDashboard'), 'ForexDashboard');
 const AdminLoginCard = lazyWithRetry(() => import('./components/AdminPanel/AdminLoginCard'), 'AdminLoginCard');
 const AdminDashboard = lazyWithRetry(() => import('./components/AdminPanel/AdminDashboard'), 'AdminDashboard');
 
-// Pre-trigger ForexDashboard chunk download immediately at millisecond 0 if authenticated session exists
+// Pre-trigger ForexDashboard chunk download immediately if authenticated session exists
 if (typeof window !== 'undefined') {
   try {
     const hasCachedUser = Object.keys(localStorage).some(k => k.startsWith('firebase:authUser:'));
@@ -593,17 +593,28 @@ export default function App() {
       {/* Main Container */}
       <main className={`relative z-10 flex-1 w-full ${user ? '' : 'flex items-center justify-center p-4 sm:p-6 my-auto'}`}>
         {user ? (
-          <ForexDashboard 
-            user={user} 
-            isSuperAdmin={isSuperAdmin}
-            onSwitchToAdmin={handleSwitchToAdmin}
-            onLogout={() => {
-              signOut(auth).catch((err) => console.warn('Sign out notice:', err));
-              try { sessionStorage.removeItem('forex_dashboard_synced'); } catch (_) {}
-              setUser(null);
-              setVisitorView('portal');
-            }} 
-          />
+          <Suspense fallback={
+            <div className="min-h-screen w-full bg-[#06080E] flex flex-col items-center justify-center p-6 text-center select-none">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-b from-[#141E34] to-[#0A0E18] border border-[#F5B301]/70 flex items-center justify-center shadow-2xl shadow-[#F5B301]/30 p-2 animate-pulse mb-3">
+                <div className="w-6 h-6 rounded-full border-2 border-[#F5B301] border-t-transparent animate-spin" />
+              </div>
+              <span className="text-xs font-mono font-bold text-[#F5B301] tracking-wider uppercase animate-pulse">
+                Initializing FXBY24 Workspace...
+              </span>
+            </div>
+          }>
+            <ForexDashboard 
+              user={user} 
+              isSuperAdmin={isSuperAdmin}
+              onSwitchToAdmin={handleSwitchToAdmin}
+              onLogout={() => {
+                signOut(auth).catch((err) => console.warn('Sign out notice:', err));
+                try { sessionStorage.removeItem('forex_dashboard_synced'); } catch (_) {}
+                setUser(null);
+                setVisitorView('portal');
+              }} 
+            />
+          </Suspense>
         ) : (
           <GlassLoginCard 
             initialMode={authInitialMode}

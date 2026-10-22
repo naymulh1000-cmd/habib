@@ -70,6 +70,7 @@ const TradeDetailModal = React.lazy(() => import('./TradeDetailModal').then(m =>
 import { AccountType } from '../types';
 import { getStoredMarkets, subscribeToMarketConfig, MarketPairConfig, getSyncedMarketPrice, getCandleBucketMetrics, getMarketContractUnits, CandlePredictionMetrics, setMarketLiveExposure } from '../lib/marketConfig';
 import { customMarketEngine, TimeframeId } from '../lib/customMarketEngine';
+import { realTimeLiveMarketService } from '../lib/realTimeLiveMarketService';
 import { db } from '../lib/firebase';
 import { collection, addDoc, setDoc, doc, serverTimestamp, getDocs, query, where } from 'firebase/firestore';
 import { saveTradeToFirestore, saveTradesBatchToFirestore, saveUserBalancesToFirestore } from '../lib/firestoreSync';
@@ -2713,7 +2714,9 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       customMarketEngine.seedCandles(activeMarket.symbol, timeframe as TimeframeId, finalCandles);
 
       const now = customMarketEngine.getSyncedNow();
-      const currentLivePrice = getSyncedMarketPrice(activeMarket, now) || (finalCandles.length > 0 ? finalCandles[finalCandles.length - 1].close : activeMarket.basePrice);
+      const currentLivePrice = isReal
+        ? (realTimeLiveMarketService.getLatestPrice(activeMarket.symbol) || (finalCandles.length > 0 ? finalCandles[finalCandles.length - 1].close : customMarketEngine.getCurrentPrice(activeMarket.symbol) || activeMarket.basePrice))
+        : (getSyncedMarketPrice(activeMarket, now) || (finalCandles.length > 0 ? finalCandles[finalCandles.length - 1].close : activeMarket.basePrice));
       setCurrentTickPrice(currentLivePrice);
 
       const tfSecs = getTimeframeSeconds(timeframe);
@@ -2785,10 +2788,28 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       }
     );
 
+    // Direct Real-Time tick event listener for sub-second updates on active real market
+    const handleDirectRealTick = (e: any) => {
+      const tick = e.detail;
+      if (!tick || !isMounted) return;
+      const tickSym = (tick.symbol || '').toUpperCase().replace(/\s+/g, '');
+      const activeSym = (activeMarket.symbol || '').toUpperCase().replace(/\s+/g, '');
+      if (tickSym === activeSym || tick.symbol === activeMarket.id) {
+        const latestPrice = tick.price;
+        setCurrentTickPrice(prevPrice => {
+          if (latestPrice > prevPrice) setPriceChangeDirection('up');
+          else if (latestPrice < prevPrice) setPriceChangeDirection('down');
+          return latestPrice;
+        });
+      }
+    };
+    window.addEventListener('real_live_market_tick', handleDirectRealTick);
+
     return () => {
       isMounted = false;
       unsubCandles();
       unsubTicker();
+      window.removeEventListener('real_live_market_tick', handleDirectRealTick);
     };
   }, [selectedMarketId, timeframe, activeMarket?.id, activeMarket?.basePrice]);
 

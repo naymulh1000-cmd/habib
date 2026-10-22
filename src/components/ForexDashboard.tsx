@@ -56,23 +56,24 @@ import { doc, getDoc, setDoc, updateDoc, collection, getDocs, query, where, serv
 import { AccountType, AccountBalances, CoinAsset, TradePosition, TransactionRecord, KYCRequest } from '../types';
 import { INITIAL_COIN_ASSETS, INITIAL_TRANSACTIONS } from '../data/mockData';
 import { Sidebar } from './Sidebar';
-import { TradingTerminalView, ActiveTrade } from './TradingTerminalView';
+import type { ActiveTrade } from './TradingTerminalView';
 import { TradeHistoryList } from './TradeHistoryList';
 
-// Eagerly import all dashboard modals so button clicks trigger in 0ms without network suspension or freezing
-import { TradeTypeModal } from './TradeTypeModal';
-import { MarketsView } from './MarketsView';
-import { DepositModal } from './DepositModal';
-import { WithdrawModal } from './WithdrawModal';
-import { HelpLineModal } from './HelpLineModal';
-import { FeedbackModal } from './FeedbackModal';
-import { TradeHistoryModal } from './TradeHistoryModal';
-import { KYCModal } from './KYCModal';
-import { ChangePasswordModal } from './ChangePasswordModal';
-import { ShareReferralModal } from './ShareReferralModal';
-import { MyReferralsModal } from './MyReferralsModal';
-import { AvatarPickerModal } from './AvatarPickerModal';
-import { EditDemoBalanceModal } from './EditDemoBalanceModal';
+// Code-split secondary views and modals with intelligent background preloading for instant responsiveness
+const TradingTerminalView = lazy(() => import('./TradingTerminalView').then(m => ({ default: m.TradingTerminalView })));
+const TradeTypeModal = lazy(() => import('./TradeTypeModal').then(m => ({ default: m.TradeTypeModal })));
+const MarketsView = lazy(() => import('./MarketsView').then(m => ({ default: m.MarketsView })));
+const DepositModal = lazy(() => import('./DepositModal').then(m => ({ default: m.DepositModal })));
+const WithdrawModal = lazy(() => import('./WithdrawModal').then(m => ({ default: m.WithdrawModal })));
+const HelpLineModal = lazy(() => import('./HelpLineModal').then(m => ({ default: m.HelpLineModal })));
+const FeedbackModal = lazy(() => import('./FeedbackModal').then(m => ({ default: m.FeedbackModal })));
+const TradeHistoryModal = lazy(() => import('./TradeHistoryModal').then(m => ({ default: m.TradeHistoryModal })));
+const KYCModal = lazy(() => import('./KYCModal').then(m => ({ default: m.KYCModal })));
+const ChangePasswordModal = lazy(() => import('./ChangePasswordModal').then(m => ({ default: m.ChangePasswordModal })));
+const ShareReferralModal = lazy(() => import('./ShareReferralModal').then(m => ({ default: m.ShareReferralModal })));
+const MyReferralsModal = lazy(() => import('./MyReferralsModal').then(m => ({ default: m.MyReferralsModal })));
+const AvatarPickerModal = lazy(() => import('./AvatarPickerModal').then(m => ({ default: m.AvatarPickerModal })));
+const EditDemoBalanceModal = lazy(() => import('./EditDemoBalanceModal').then(m => ({ default: m.EditDemoBalanceModal })));
 import { 
   getStoredKycRequests, 
   getStoredNotifications, 
@@ -125,29 +126,45 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
     }
   }, [selectedTradingMarketId]);
 
-  // Fast Initial Synchronization Progress Engine (1% -> 80% in 10s, then 80% -> 100% in next 10-12s)
-  const [syncProgress, setSyncProgress] = useState<number>(1);
+  // Ultra-Fast High-Performance Synchronization Progress Engine (1% -> 100% in ~1.8 seconds)
+  const [syncProgress, setSyncProgress] = useState<number>(() => {
+    try {
+      if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('forex_dashboard_synced') === 'true') {
+        return 100;
+      }
+    } catch (_) {}
+    return 1;
+  });
   const [syncStatusText, setSyncStatusText] = useState<string>('Initializing Secure Node...');
-  const [isInitialSyncComplete, setIsInitialSyncComplete] = useState<boolean>(false);
+  const [isInitialSyncComplete, setIsInitialSyncComplete] = useState<boolean>(() => {
+    try {
+      if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('forex_dashboard_synced') === 'true') {
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  });
 
   useEffect(() => {
+    if (isInitialSyncComplete) return;
+
     let current = 1;
     let timerId: any = null;
 
     const tick = () => {
-      // First phase: 1% to 80% completes in exactly ~10 seconds (~125ms per tick)
-      // Second phase: 81% to 100% completes steadily in ~10-11 seconds (~550ms per tick)
-      const nextDelay = current < 80 ? 125 : 550;
-      current = Math.min(100, current + 1);
+      // Dynamic progressive increments: rapid rise to 80% in ~700ms, then steady finish to 100% in ~900ms
+      const increment = current < 30 ? 4 : current < 75 ? 3 : current < 92 ? 2 : 1;
+      const nextDelay = current < 80 ? 25 : 55;
+      current = Math.min(100, current + increment);
       setSyncProgress(current);
 
-      if (current < 20) {
+      if (current < 25) {
         setSyncStatusText('Initializing High-Speed Trading Engine...');
-      } else if (current < 45) {
+      } else if (current < 50) {
         setSyncStatusText('Connecting to Global Market Liquidity...');
-      } else if (current < 70) {
+      } else if (current < 75) {
         setSyncStatusText('Synchronizing Real-Time Forex & OTC Feeds...');
-      } else if (current < 85) {
+      } else if (current < 90) {
         setSyncStatusText('Verifying Encrypted Wallet Balances...');
       } else if (current < 99) {
         setSyncStatusText('Optimizing Interactive Trading Workspace...');
@@ -156,19 +173,34 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
       }
 
       if (current >= 100) {
+        try { sessionStorage.setItem('forex_dashboard_synced', 'true'); } catch (_) {}
         setTimeout(() => {
           setIsInitialSyncComplete(true);
-        }, 220);
+        }, 180);
       } else {
         timerId = setTimeout(tick, nextDelay);
       }
     };
 
-    timerId = setTimeout(tick, 125);
+    timerId = setTimeout(tick, 20);
 
     return () => {
       if (timerId) clearTimeout(timerId);
     };
+  }, [isInitialSyncComplete]);
+
+  // Intelligent Background Preloader: caches TradingTerminalView, MarketsView, and Modals into browser memory
+  useEffect(() => {
+    const idleTimer = setTimeout(() => {
+      import('./TradingTerminalView').catch(() => {});
+      import('./MarketsView').catch(() => {});
+      import('./DepositModal').catch(() => {});
+      import('./WithdrawModal').catch(() => {});
+      import('./TradeTypeModal').catch(() => {});
+      import('./KYCModal').catch(() => {});
+      import('./TradeHistoryModal').catch(() => {});
+    }, 150);
+    return () => clearTimeout(idleTimer);
   }, []);
 
   // Account Type Selection: Demo, Live, Bonus (Default to bonus to match screenshot)
@@ -2540,26 +2572,35 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
 
           {/* TRADE TAB & BINARY TAB (Trading Terminal View) */}
           {(activeBottomNav === 'trade' || activeBottomNav === 'binary') && (
-            <TradingTerminalView
-              key={activeBottomNav}
-              activeAccount={accountType}
-              setActiveAccount={setAccountType}
-              balances={balances}
-              setBalances={setBalances}
-              userEmail={user.email || undefined}
-              userUid={user.uid || undefined}
-              userDisplayName={userDisplayName}
-              userAvatar={userAvatar}
-              activeTrades={activeTrades}
-              setActiveTrades={setActiveTrades}
-              closedTrades={closedTrades}
-              setClosedTrades={setClosedTrades}
-              initialTradingMode={activeBottomNav === 'binary' ? 'otc' : 'forex'}
-              initialMarketId={selectedTradingMarketId}
-              isSuperAdmin={isSuperAdmin}
-              isAdmin={Boolean(isSuperAdmin || (user?.email && ['naymulh1000@gmail.com', 'admin@fxby24.com', 'admin@forextradepro.com'].includes(user.email.toLowerCase().trim())))}
-              onBack={() => setActiveBottomNav('home')}
-            />
+            <Suspense fallback={
+              <div className="flex-1 flex flex-col items-center justify-center p-12 text-center text-gray-400 min-h-[380px]">
+                <div className="w-8 h-8 rounded-full border-2 border-[#F5B301]/30 border-t-[#F5B301] animate-spin mb-3" />
+                <span className="text-xs font-mono font-bold text-[#F5B301] uppercase tracking-wider">
+                  Loading Trading Workspace...
+                </span>
+              </div>
+            }>
+              <TradingTerminalView
+                key={activeBottomNav}
+                activeAccount={accountType}
+                setActiveAccount={setAccountType}
+                balances={balances}
+                setBalances={setBalances}
+                userEmail={user.email || undefined}
+                userUid={user.uid || undefined}
+                userDisplayName={userDisplayName}
+                userAvatar={userAvatar}
+                activeTrades={activeTrades}
+                setActiveTrades={setActiveTrades}
+                closedTrades={closedTrades}
+                setClosedTrades={setClosedTrades}
+                initialTradingMode={activeBottomNav === 'binary' ? 'otc' : 'forex'}
+                initialMarketId={selectedTradingMarketId}
+                isSuperAdmin={isSuperAdmin}
+                isAdmin={Boolean(isSuperAdmin || (user?.email && ['naymulh1000@gmail.com', 'admin@fxby24.com', 'admin@forextradepro.com'].includes(user.email.toLowerCase().trim())))}
+                onBack={() => setActiveBottomNav('home')}
+              />
+            </Suspense>
           )}
 
           {/* WALLET TAB - MY WALLET PORTFOLIO */}

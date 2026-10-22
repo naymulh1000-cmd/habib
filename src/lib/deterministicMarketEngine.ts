@@ -1,5 +1,6 @@
 import { MarketPairConfig } from './defaultMarkets';
 import { Candlestick } from '../types';
+import { realTimeLiveMarketService } from './realTimeLiveMarketService';
 
 export function hashSymbol(sym: string): number {
   let hash = 0;
@@ -131,6 +132,13 @@ function fractalPriceAction(symSeed: number, tSec: number): number {
 
 export function getSyncedMarketPrice(market: MarketPairConfig, timeMs: number, timeframeSecs: number = 60): number {
   const precision = market.precision ?? ((market.symbol || '').includes('JPY') ? 3 : (market.symbol || '').includes('BTC') || (market.symbol || '').includes('XAU') ? 2 : 5);
+
+  if (market.isRealMarket || market.category !== 'otc') {
+    const live = realTimeLiveMarketService.getLatestPrice(market.symbol);
+    if (live && live > 0) {
+      return Number(live.toFixed(precision));
+    }
+  }
 
   const base = market.basePrice || 100;
   const symHash = hashSymbol(market.symbol || 'EUR/USD');

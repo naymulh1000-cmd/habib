@@ -68,13 +68,95 @@ export class TradingViewMasterFeed {
     this.isInitialized = true;
     console.log('[TradingView Master] Starting Real Market Feed for 6 pairs...');
 
+    // 1. Immediately preload deep authentic exchange history from Yahoo Finance (1,000 - 3,000 candles per pair)
+    this.preloadYahooHistory().catch(() => {});
+
+    // 2. Connect to TradingView WebSocket for continuous push updates
     this.connectWebSocket();
 
-    // Start fallback poll for Swissquote interbank rate backup
+    // 3. Start high-frequency Swissquote interbank rate backup
     this.fallbackPollTimer = setInterval(() => {
       this.pollSwissquoteBackup();
-    }, 4000);
+    }, 2000);
     this.pollSwissquoteBackup();
+  }
+
+  /**
+   * Preloads thousands of real, authentic historical bars on server boot for all pairs
+   * Ensures instant chart rendering for XAU/USD, EUR/USD, GBP/USD, USD/JPY, AUD/USD, USD/CAD
+   */
+  private async preloadYahooHistory() {
+    const yfMap: Record<string, string> = {
+      'EUR/USD': 'EURUSD=X',
+      'GBP/USD': 'GBPUSD=X',
+      'USD/JPY': 'USDJPY=X',
+      'AUD/USD': 'AUDUSD=X',
+      'USD/CAD': 'USDCAD=X',
+      'XAU/USD': 'GC=F'
+    };
+
+    for (const sym of MONITORED_REAL_MARKETS) {
+      const yfSymbol = yfMap[sym.id];
+      if (!yfSymbol) continue;
+      try {
+        const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${yfSymbol}?interval=1m&range=5d`, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+          signal: AbortSignal.timeout(8000)
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const result = data.chart?.result?.[0];
+          const timestamps: number[] = result?.timestamp || [];
+          const quotes = result?.indicators?.quote?.[0] || {};
+          const precision = sym.precision;
+
+          const loadedBars: MasterCandle[] = [];
+          for (let i = 0; i < timestamps.length; i++) {
+            const o = quotes.open?.[i];
+            const h = quotes.high?.[i];
+            const l = quotes.low?.[i];
+            const c = quotes.close?.[i];
+            if (o != null && c != null) {
+              const open = Number(o.toFixed(precision));
+              const close = Number(c.toFixed(precision));
+              const high = Number((h != null ? h : Math.max(open, close)).toFixed(precision));
+              const low = Number((l != null ? l : Math.min(open, close)).toFixed(precision));
+              loadedBars.push({
+                time: timestamps[i] * 1000,
+                timestamp: timestamps[i] * 1000,
+                open,
+                high: Math.max(high, open, close),
+                low: Math.min(low, open, close),
+                close,
+                volume: quotes.volume?.[i] || 100
+              });
+            }
+          }
+
+          if (loadedBars.length > 0) {
+            const existing = this.candles1m.get(sym.id) || [];
+            const mergedMap = new Map<number, MasterCandle>();
+            loadedBars.forEach(b => mergedMap.set(b.time, b));
+            existing.forEach(b => mergedMap.set(b.time, b));
+            const sorted = Array.from(mergedMap.values()).sort((a, b) => a.time - b.time);
+            if (sorted.length > 3000) sorted.splice(0, sorted.length - 3000);
+            this.candles1m.set(sym.id, sorted);
+
+            const last = sorted[sorted.length - 1];
+            const ticker = this.latestTickers.get(sym.id);
+            if (ticker) {
+              ticker.price = last.close;
+              ticker.activeCandle = last;
+              ticker.lastUpdated = Date.now();
+            }
+            console.log(`[TradingView Master] Preloaded ${sorted.length} 1m candles for ${sym.id}`);
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[TradingView Master] Preload note for ${sym.id}:`, err.message);
+      }
+    }
+    this.notifySubscribers();
   }
 
   private createSession(prefix: string): string {

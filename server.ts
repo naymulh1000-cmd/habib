@@ -23,6 +23,13 @@ import {
 } from './src/lib/benchmarkData';
 import { tradingViewMasterFeed, MONITORED_REAL_MARKETS } from './server/tradingViewMasterFeed';
 
+process.on('uncaughtException', (err) => {
+  console.warn('[Server] Safe exception guard:', err?.message || err);
+});
+process.on('unhandledRejection', (reason: any) => {
+  console.warn('[Server] Safe rejection guard:', reason?.message || reason);
+});
+
 // Start TradingView Master Feed on server boot
 tradingViewMasterFeed.start();
 
@@ -1371,7 +1378,7 @@ app.get('/api/real-market-candles', async (req, res) => {
 
     // 1. PRIMARY: Check TradingView Master Feed (XAU/USD, EUR/USD, GBP/USD, USD/JPY, AUD/USD, USD/CAD)
     const tvCandles = tradingViewMasterFeed.getCandles(rawSymbol, timeframe, count, before);
-    if (tvCandles && tvCandles.length > 0) {
+    if (tvCandles && tvCandles.length >= Math.min(count, 30)) {
       return res.json({
         success: true,
         symbol: rawSymbol,
@@ -1430,13 +1437,14 @@ app.get('/api/real-market-candles', async (req, res) => {
       }
     }
 
-    // 3. Forex Secondary Fallback (Yahoo Finance Chart Feed)
+    // 3. Forex & Gold Secondary Fallback (Yahoo Finance Chart Feed)
     const yfMap: Record<string, string> = {
       'EUR/USD': 'EURUSD=X',
       'GBP/USD': 'GBPUSD=X',
       'USD/JPY': 'USDJPY=X',
       'AUD/USD': 'AUDUSD=X',
-      'USD/CAD': 'USDCAD=X'
+      'USD/CAD': 'USDCAD=X',
+      'XAU/USD': 'GC=F'
     };
 
     const yfSymbol = yfMap[normSymbol];
@@ -1453,7 +1461,7 @@ app.get('/api/real-market-candles', async (req, res) => {
         const result = data.chart?.result?.[0];
         const timestamps: number[] = result?.timestamp || [];
         const quotes = result?.indicators?.quote?.[0] || {};
-        const precision = normSymbol.includes('JPY') ? 3 : 5;
+        const precision = normSymbol.includes('JPY') ? 3 : (normSymbol.includes('XAU') || normSymbol.includes('BTC')) ? 2 : 5;
 
         const candles: any[] = [];
         for (let i = 0; i < timestamps.length; i++) {
@@ -3632,7 +3640,7 @@ async function startServer() {
 
   if (!isProduction) {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: 'spa',
     });
     app.use(vite.middlewares);

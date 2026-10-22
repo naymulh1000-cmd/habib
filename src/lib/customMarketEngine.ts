@@ -635,6 +635,18 @@ private applyAuthenticExchangeCandle(
       if (market && !market.isRealMarket && market.category === 'otc') {
         bucket = this.generateHistoricalCandles(market, timeframe, 150, currentBucketTime);
         this.candleBuckets.set(bucketKey, bucket);
+      } else if (price > 0) {
+        const seedCandle: Candlestick = {
+          time: currentBucketTime,
+          timestamp: currentBucketTime,
+          open: price,
+          high: price,
+          low: price,
+          close: price,
+          volume: 50
+        };
+        bucket = [seedCandle];
+        this.candleBuckets.set(bucketKey, bucket);
       } else {
         return;
       }
@@ -845,9 +857,16 @@ private applyAuthenticExchangeCandle(
   }
 
   public getCurrentPrice(symbolOrId: string): number {
+    const market = this.getMarket(symbolOrId);
+    if (market && (market.isRealMarket || market.category !== 'otc')) {
+      const realP = realTimeLiveMarketService.getLatestPrice(market.symbol);
+      if (realP && realP > 0) {
+        this.currentPrices.set(market.symbol, realP);
+        return realP;
+      }
+    }
     const direct = this.currentPrices.get(symbolOrId);
     if (direct !== undefined) return direct;
-    const market = this.getMarket(symbolOrId);
     if (market) {
       const symPrice = this.currentPrices.get(market.symbol);
       if (symPrice !== undefined) return symPrice;

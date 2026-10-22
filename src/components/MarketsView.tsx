@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { getStoredMarkets, subscribeToMarketConfig, MarketPairConfig, getSyncedMarketPrice } from '../lib/marketConfig';
 import { customMarketEngine } from '../lib/customMarketEngine';
+import { realTimeLiveMarketService } from '../lib/realTimeLiveMarketService';
 
 interface MarketsViewProps {
   onSelectMarket: (marketId: string, mode: 'trade' | 'binary') => void;
@@ -47,10 +48,18 @@ export const MarketsView: React.FC<MarketsViewProps> = ({ onSelectMarket }) => {
 
   // Subscribe to live price ticks for every market
   useEffect(() => {
+    const getMarketPrice = (m: MarketPairConfig, now: number) => {
+      if (m.isRealMarket || m.category !== 'otc') {
+        const liveP = realTimeLiveMarketService.getLatestPrice(m.symbol);
+        if (liveP && liveP > 0) return liveP;
+      }
+      return customMarketEngine.getCurrentPrice(m.symbol) || getSyncedMarketPrice(m, now) || m.basePrice;
+    };
+
     const initialMap: Record<string, { price: number; dir: 'up' | 'down' | 'neutral' }> = {};
     const now = Date.now();
     markets.forEach(m => {
-      const p = customMarketEngine.getCurrentPrice(m.symbol) || getSyncedMarketPrice(m, now);
+      const p = getMarketPrice(m, now);
       initialMap[m.symbol] = { price: p, dir: 'neutral' };
     });
     setLivePrices(initialMap);
@@ -68,8 +77,23 @@ export const MarketsView: React.FC<MarketsViewProps> = ({ onSelectMarket }) => {
       });
     });
 
+    const handleRealTick = (e: any) => {
+      const tick = e.detail;
+      if (!tick || !tick.symbol || !tick.price) return;
+      setLivePrices(prev => {
+        const old = prev[tick.symbol]?.price ?? tick.price;
+        const dir = tick.price > old ? 'up' : tick.price < old ? 'down' : (prev[tick.symbol]?.dir || 'neutral');
+        return {
+          ...prev,
+          [tick.symbol]: { price: tick.price, dir }
+        };
+      });
+    };
+    window.addEventListener('real_live_market_tick', handleRealTick);
+
     return () => {
       unsubs.forEach(u => u());
+      window.removeEventListener('real_live_market_tick', handleRealTick);
     };
   }, [markets]);
 
@@ -81,7 +105,9 @@ export const MarketsView: React.FC<MarketsViewProps> = ({ onSelectMarket }) => {
         let changed = false;
         const next = { ...prev };
         markets.forEach(m => {
-          const current = customMarketEngine.getCurrentPrice(m.symbol) || getSyncedMarketPrice(m, now);
+          const current = (m.isRealMarket || m.category !== 'otc')
+            ? (realTimeLiveMarketService.getLatestPrice(m.symbol) || customMarketEngine.getCurrentPrice(m.symbol) || m.basePrice)
+            : (customMarketEngine.getCurrentPrice(m.symbol) || getSyncedMarketPrice(m, now));
           const old = prev[m.symbol]?.price;
           if (old === undefined || Math.abs(current - old) > 0.000001) {
             const dir = old !== undefined ? (current > old ? 'up' : 'down') : 'neutral';

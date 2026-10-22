@@ -722,10 +722,10 @@ export function calculateForexPnl(
 }
 
 export function getCanonicalAnchorPrice(market: MarketPairConfig, timestamp: number, tfSecs: number = 60): number {
-  if (market.symbol === 'XAU/USD' || market.id === 'xau_usd') {
-    const liveGold = realTimeLiveMarketService.getLatestPrice('XAU/USD');
-    if (liveGold && liveGold > 0) {
-      return Number(liveGold.toFixed(market.precision || 2));
+  if (market.isRealMarket || market.category !== 'otc') {
+    const live = realTimeLiveMarketService.getLatestPrice(market.symbol);
+    if (live && live > 0) {
+      return Number(live.toFixed(market.precision || 5));
     }
   }
 
