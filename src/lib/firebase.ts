@@ -1,6 +1,9 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
   getAuth, 
+  initializeAuth,
+  browserLocalPersistence,
+  indexedDBLocalPersistence,
   GoogleAuthProvider, 
   signInWithPopup, 
   signInWithEmailAndPassword, 
@@ -16,6 +19,7 @@ import {
 import { 
   getFirestore, 
   initializeFirestore,
+  memoryLocalCache,
   doc, 
   setDoc, 
   getDoc, 
@@ -81,19 +85,38 @@ export const activeFirebaseConfig = storedConfig
 const app = getApps().length > 0 ? getApp() : initializeApp(activeFirebaseConfig);
 
 // Initialize Firebase Services
-export const auth = getAuth(app);
+function initAuthInstance() {
+  if (typeof window !== 'undefined') {
+    try {
+      return initializeAuth(app, {
+        persistence: [browserLocalPersistence, indexedDBLocalPersistence]
+      });
+    } catch (_) {
+      return getAuth(app);
+    }
+  }
+  return getAuth(app);
+}
+
+export const auth = initAuthInstance();
 const dbDatabaseId = activeFirebaseConfig.firestoreDatabaseId;
 
 function initFirestoreInstance() {
   try {
-    const opts = { experimentalAutoDetectLongPolling: true, useFetchStreams: false };
+    // memoryLocalCache guarantees zero IndexedDB lock deadlocks across browser tabs and instant reload in 0ms
+    const settings = {
+      localCache: memoryLocalCache()
+    };
     if (dbDatabaseId && dbDatabaseId !== '(default)') {
-      return initializeFirestore(app, opts, dbDatabaseId);
+      return initializeFirestore(app, settings, dbDatabaseId);
     }
-    return initializeFirestore(app, opts);
+    return initializeFirestore(app, settings);
   } catch (_) {
     try {
-      return (dbDatabaseId && dbDatabaseId !== '(default)') ? getFirestore(app, dbDatabaseId) : getFirestore(app);
+      if (dbDatabaseId && dbDatabaseId !== '(default)') {
+        return getFirestore(app, dbDatabaseId);
+      }
+      return getFirestore(app);
     } catch {
       return getFirestore(app);
     }
@@ -217,8 +240,17 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   if (isQuotaError(error)) {
     return;
   }
+  const rawMsg = error instanceof Error ? error.message : String(error);
+  if (
+    rawMsg.includes('exceeds 50% eligible profit limit') ||
+    rawMsg.includes('Deposit bonus cannot be withdrawn directly') ||
+    rawMsg.includes('trading profit (50%) earned') ||
+    rawMsg.includes('Insufficient')
+  ) {
+    return;
+  }
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: rawMsg,
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,

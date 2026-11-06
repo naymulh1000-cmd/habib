@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { db, isQuotaExceeded, isQuotaError } from './firebase';
 import { doc, setDoc, onSnapshot } from 'firebase/firestore';
+import { safeFetch, safeFetchJson } from './safeApi';
 
 export interface HelplineConfig {
   telegramUrl: string;
@@ -165,20 +166,14 @@ export async function saveHelplineConfig(updates: Partial<HelplineConfig>): Prom
     } catch (_) {}
   }
 
-  // 2. Persist to Express backend server with timeout so it writes to permanent disk
+  // 2. Persist to Express backend server with timeout guard
   try {
-    await withTimeout(
-      fetch('/api/helpline', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(merged),
-      }).then(r => r.ok ? r.json() : null),
-      2500,
-      null
-    );
-  } catch (err) {
-    console.warn('Backend helpline save warning:', err);
-  }
+    safeFetch('/api/helpline', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(merged),
+    }, 600).catch(() => {});
+  } catch (_) {}
 
   // 3. Persist to Firestore for real-time live push to all online traders (non-blocking with timeout)
   if (!isQuotaExceeded()) {
@@ -233,41 +228,30 @@ export function subscribeToHelpline(onUpdate: (config: HelplineConfig) => void):
     window.addEventListener('forex_helpline_updated', handleCustomEvent);
   }
 
-  // Periodic server polling (every 4s) to guarantee phone <-> desktop sync
-  const pollTimer = setInterval(async () => {
-    try {
-      const res = await fetch('/api/helpline');
-      if (res.ok) {
-        const data = await res.json();
-        if (data && typeof data === 'object' && data.telegramUrl !== undefined) {
-          const current = getStoredHelpline();
-          const localTime = new Date(current.updatedAt || 0).getTime();
-          const serverTime = new Date(data.updatedAt || 0).getTime();
+  // Initial fetch on mount (with safe timeout, zero background polling)
+  safeFetchJson('/api/helpline', {}, 600)
+    .then(data => {
+      if (data && typeof data === 'object' && data.telegramUrl !== undefined) {
+        const current = getStoredHelpline();
+        const localTime = new Date(current.updatedAt || 0).getTime();
+        const serverTime = new Date(data.updatedAt || 0).getTime();
 
-          if (serverTime >= localTime) {
-            if (
-              data.telegramUrl !== current.telegramUrl ||
-              data.gmailUrl !== current.gmailUrl ||
-              data.hotlinePhone !== current.hotlinePhone ||
-              data.whatsappUrl !== current.whatsappUrl ||
-              data.customLinkUrl !== current.customLinkUrl ||
-              data.supportNotice !== current.supportNotice
-            ) {
-              saveStoredHelpline(data);
-              onUpdate(data);
-            }
-          } else if (localTime > serverTime + 2000) {
-            // Local is newer, push to server to keep it synced permanently
-            fetch('/api/helpline', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(current)
-            }).catch(() => {});
+        if (serverTime >= localTime) {
+          if (
+            data.telegramUrl !== current.telegramUrl ||
+            data.gmailUrl !== current.gmailUrl ||
+            data.hotlinePhone !== current.hotlinePhone ||
+            data.whatsappUrl !== current.whatsappUrl ||
+            data.customLinkUrl !== current.customLinkUrl ||
+            data.supportNotice !== current.supportNotice
+          ) {
+            saveStoredHelpline(data);
+            onUpdate(data);
           }
         }
       }
-    } catch (_) {}
-  }, 4000);
+    })
+    .catch(() => {});
 
   // Real-time Firestore snapshot listener if available
   let unsubFirestore: (() => void) | null = null;
@@ -301,7 +285,6 @@ export function subscribeToHelpline(onUpdate: (config: HelplineConfig) => void):
     if (typeof window !== 'undefined') {
       window.removeEventListener('forex_helpline_updated', handleCustomEvent);
     }
-    clearInterval(pollTimer);
     if (unsubFirestore) {
       unsubFirestore();
     }

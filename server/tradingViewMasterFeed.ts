@@ -74,10 +74,10 @@ export class TradingViewMasterFeed {
     // 2. Connect to TradingView WebSocket for continuous push updates
     this.connectWebSocket();
 
-    // 3. Start high-frequency Swissquote interbank rate backup
+    // 3. Start high-frequency Swissquote interbank rate backup (every 1 second)
     this.fallbackPollTimer = setInterval(() => {
       this.pollSwissquoteBackup();
-    }, 2000);
+    }, 1000);
     this.pollSwissquoteBackup();
   }
 
@@ -276,7 +276,38 @@ export class TradingViewMasterFeed {
               const v = quoteData.v;
               const curTicker = this.latestTickers.get(target.id)!;
               if (v.lp != null && v.lp > 0) {
-                curTicker.price = Number(v.lp.toFixed(target.precision));
+                const liveP = Number(v.lp.toFixed(target.precision));
+                curTicker.price = liveP;
+
+                // Live-update or create active forming 1-minute candle on every single tick
+                const candles = this.candles1m.get(target.id) || [];
+                const now = Date.now();
+                const currentBucket = Math.floor(now / 60000) * 60000;
+
+                if (candles.length === 0 || candles[candles.length - 1].time < currentBucket) {
+                  const prevClose = candles.length > 0 ? candles[candles.length - 1].close : liveP;
+                  const newCandle: MasterCandle = {
+                    time: currentBucket,
+                    timestamp: currentBucket,
+                    open: prevClose,
+                    high: Math.max(prevClose, liveP),
+                    low: Math.min(prevClose, liveP),
+                    close: liveP,
+                    volume: 100
+                  };
+                  candles.push(newCandle);
+                  if (candles.length > 2000) candles.splice(0, candles.length - 2000);
+                  this.candles1m.set(target.id, candles);
+                  this.activeCandles.set(target.id, newCandle);
+                  curTicker.activeCandle = newCandle;
+                } else {
+                  const active = candles[candles.length - 1];
+                  active.high = Math.max(active.high, liveP);
+                  active.low = Math.min(active.low, liveP);
+                  active.close = liveP;
+                  active.volume = (active.volume || 100) + 1;
+                  curTicker.activeCandle = active;
+                }
               }
               if (v.high_price != null) curTicker.high24h = Number(v.high_price.toFixed(target.precision));
               if (v.low_price != null) curTicker.low24h = Number(v.low_price.toFixed(target.precision));
@@ -364,8 +395,8 @@ export class TradingViewMasterFeed {
 
             const ticker = this.latestTickers.get(sym.id);
             if (ticker) {
-              // If TradingView hasn't updated in > 3 seconds, update with Swissquote
-              if (Date.now() - ticker.lastUpdated > 3000) {
+              // If TradingView hasn't updated in > 1.2 seconds, update with Swissquote
+              if (Date.now() - ticker.lastUpdated > 1200) {
                 ticker.price = price;
                 ticker.lastUpdated = Date.now();
 

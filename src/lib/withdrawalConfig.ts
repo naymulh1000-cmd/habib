@@ -1,5 +1,6 @@
 import { db, isQuotaExceeded, isQuotaError } from './firebase';
 import { doc, setDoc, onSnapshot } from 'firebase/firestore';
+import { safeFetch, safeFetchJson } from './safeApi';
 
 export interface WithdrawalMethodConfig {
   id: string;
@@ -173,13 +174,13 @@ export function saveStoredWithdrawalRules(rules: WithdrawalRulesConfig) {
 export async function saveWithdrawalMethodsToFirestore(methods: WithdrawalMethodConfig[]): Promise<boolean> {
   saveStoredWithdrawalMethods(methods);
 
-  // Sync to Express backend for immediate cross-device distribution
+  // Sync to Express backend for immediate cross-device distribution (with timeout guard)
   try {
-    fetch('/api/withdrawal-config', {
+    safeFetch('/api/withdrawal-config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ methods })
-    }).catch(() => {});
+    }, 600).catch(() => {});
   } catch (_) {}
 
   try {
@@ -200,13 +201,13 @@ export async function saveWithdrawalMethodsToFirestore(methods: WithdrawalMethod
 export async function saveWithdrawalRulesToFirestore(rules: WithdrawalRulesConfig): Promise<boolean> {
   saveStoredWithdrawalRules(rules);
 
-  // Sync to Express backend for immediate cross-device distribution
+  // Sync to Express backend for immediate cross-device distribution (with timeout guard)
   try {
-    fetch('/api/withdrawal-config', {
+    safeFetch('/api/withdrawal-config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ rules })
-    }).catch(() => {});
+    }, 600).catch(() => {});
   } catch (_) {}
 
   try {
@@ -230,43 +231,37 @@ export function subscribeToWithdrawalConfig(
   // Always emit cached version first for instant UI response
   onUpdate(getStoredWithdrawalMethods(), getStoredWithdrawalRules());
 
-  // Polling to Express server every 3.5s to guarantee phone <-> desktop sync
-  const pollTimer = setInterval(async () => {
-    try {
-      const res = await fetch('/api/withdrawal-config');
-      if (res.ok) {
-        const data = await res.json();
-        let changed = false;
-        let curMethods = getStoredWithdrawalMethods();
-        let curRules = getStoredWithdrawalRules();
+  // Initial fetch on mount (with safe timeout, zero repeated background polling)
+  safeFetchJson('/api/withdrawal-config', {}, 600)
+    .then(data => {
+      if (!data) return;
+      let changed = false;
+      let curMethods = getStoredWithdrawalMethods();
+      let curRules = getStoredWithdrawalRules();
 
-        if (Array.isArray(data.methods) && data.methods.length > 0) {
-          curMethods = data.methods;
-          saveStoredWithdrawalMethods(curMethods);
-          changed = true;
-        }
-        if (data.rules && typeof data.rules === 'object') {
-          curRules = { ...curRules, ...data.rules };
-          saveStoredWithdrawalRules(curRules);
-          changed = true;
-        }
-        if (changed) {
-          onUpdate(curMethods, curRules);
-        }
+      if (Array.isArray(data.methods) && data.methods.length > 0) {
+        curMethods = data.methods;
+        saveStoredWithdrawalMethods(curMethods);
+        changed = true;
       }
-    } catch (_) {}
-  }, 3500);
+      if (data.rules && typeof data.rules === 'object') {
+        curRules = { ...curRules, ...data.rules };
+        saveStoredWithdrawalRules(curRules);
+        changed = true;
+      }
+      if (changed) {
+        onUpdate(curMethods, curRules);
+      }
+    })
+    .catch(() => {});
 
   // Focus refresh
   const handleFocus = async () => {
     try {
-      const res = await fetch('/api/withdrawal-config');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.methods) && data.methods.length > 0) {
-          saveStoredWithdrawalMethods(data.methods);
-          onUpdate(data.methods, data.rules || getStoredWithdrawalRules());
-        }
+      const data = await safeFetchJson('/api/withdrawal-config', {}, 600);
+      if (data && Array.isArray(data.methods) && data.methods.length > 0) {
+        saveStoredWithdrawalMethods(data.methods);
+        onUpdate(data.methods, data.rules || getStoredWithdrawalRules());
       }
     } catch (_) {}
   };
@@ -277,7 +272,6 @@ export function subscribeToWithdrawalConfig(
 
   if (isQuotaExceeded()) {
     return () => {
-      clearInterval(pollTimer);
       if (typeof window !== 'undefined') window.removeEventListener('focus', handleFocus);
     };
   }
@@ -321,7 +315,6 @@ export function subscribeToWithdrawalConfig(
   });
 
   return () => {
-    clearInterval(pollTimer);
     if (typeof window !== 'undefined') window.removeEventListener('focus', handleFocus);
     unsubscribe();
   };

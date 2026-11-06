@@ -2,6 +2,7 @@ import { collection, query, where, doc, getDoc, setDoc, onSnapshot, serverTimest
 import { db, isQuotaExceeded, isQuotaError, markQuotaExceeded } from './firebase';
 import { COUNTRIES } from '../data/countries';
 import { calculateAccountMetricsEngine, getDailyTradingCycleWindow } from './profitCalculator';
+import { safeFetch, safeFetchJson } from './safeApi';
 
 let _leaderboardBroadcastChannel: BroadcastChannel | null = null;
 function getLeaderboardBroadcastChannel(): BroadcastChannel | null {
@@ -381,13 +382,13 @@ export function saveStoredLeaderboardConfig(config: LeaderboardConfig) {
 export async function saveLeaderboardConfigToFirestore(config: LeaderboardConfig): Promise<boolean> {
   saveStoredLeaderboardConfig(config);
 
-  // Sync to Backend Server
+  // Sync to Backend Server (with timeout guard)
   try {
-    fetch('/api/leaderboard/config', {
+    safeFetch('/api/leaderboard/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(config),
-    }).catch(() => {});
+    }, 600).catch(() => {});
   } catch (_) {}
 
   // Broadcast to other tabs
@@ -438,23 +439,18 @@ export function subscribeToLeaderboardConfig(
     channel.addEventListener('message', handleBroadcast);
   }
 
-  // Periodic fallback polling from backend server
-  const pollTimer = setInterval(async () => {
-    try {
-      const res = await fetch('/api/leaderboard/config');
-      if (res.ok) {
-        const json = await res.json();
-        if (json?.config) {
-          saveStoredLeaderboardConfig(json.config);
-          callback(json.config);
-        }
+  // Initial fetch on mount (with safe timeout, zero repeated background polling)
+  safeFetchJson('/api/leaderboard/config', {}, 600)
+    .then(json => {
+      if (json?.config) {
+        saveStoredLeaderboardConfig(json.config);
+        callback(json.config);
       }
-    } catch (_) {}
-  }, 4000);
+    })
+    .catch(() => {});
 
   if (isQuotaExceeded()) {
     return () => {
-      clearInterval(pollTimer);
       const ch = getLeaderboardBroadcastChannel();
       if (ch) {
         ch.removeEventListener('message', handleBroadcast);
@@ -487,7 +483,6 @@ export function subscribeToLeaderboardConfig(
     });
 
     return () => {
-      clearInterval(pollTimer);
       unsub();
       const ch = getLeaderboardBroadcastChannel();
       if (ch) {
@@ -497,7 +492,6 @@ export function subscribeToLeaderboardConfig(
   } catch (err) {
     console.warn('Failed initializing leaderboard subscriber:', err);
     return () => {
-      clearInterval(pollTimer);
       const ch = getLeaderboardBroadcastChannel();
       if (ch) {
         ch.removeEventListener('message', handleBroadcast);
@@ -751,12 +745,24 @@ export function subscribeToGlobalLeaderboard(
     return ranked;
   };
 
-  // 1. Full-stack Server API polling: guarantees cross-device sync and authoritative single source of truth
+  // 1. Server API polling with safe timeout and circuit breaker
+  let isServerFetchInFlight = false;
+  let serverFailCount = 0;
+  let serverPollInterval: any = null;
+
   const fetchFromServer = async () => {
+    if (serverFailCount >= 2 || isServerFetchInFlight) {
+      if (serverPollInterval) {
+        clearInterval(serverPollInterval);
+        serverPollInterval = null;
+      }
+      return;
+    }
+    isServerFetchInFlight = true;
     try {
-      const res = await fetch(`/api/leaderboard/${accountType}`);
-      if (res.ok) {
-        const json = await res.json();
+      const json = await safeFetchJson(`/api/leaderboard/${accountType}`, {}, 600);
+      if (json) {
+        serverFailCount = 0;
         const incomingList = (Array.isArray(json?.top50) && json.top50.length > 0)
           ? json.top50
           : (Array.isArray(json?.top20) && json.top20.length > 0 ? json.top20 : null);
@@ -789,12 +795,18 @@ export function subscribeToGlobalLeaderboard(
           });
           emitIfChanged(incomingList, json.lastUpdated || Date.now());
         }
+      } else {
+        serverFailCount++;
       }
-    } catch (_) {}
+    } catch (_) {
+      serverFailCount++;
+    } finally {
+      isServerFetchInFlight = false;
+    }
   };
 
   fetchFromServer();
-  const serverPollInterval = setInterval(fetchFromServer, 4000);
+  serverPollInterval = setInterval(fetchFromServer, 20000);
 
   // Cross-tab broadcast receiver
   const handleBroadcast = (event: MessageEvent) => {
@@ -1009,53 +1021,7 @@ export async function syncUserToGlobalLeaderboard(
       realTradersMap.delete(currentUser.uid);
     }
 
-    // 1. Authoritative sync with fullstack Express backend API for global cross-device visibility
-    try {
-      const res = await fetch('/api/leaderboard/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ traderRecord, accountType }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const incoming = (data && Array.isArray(data.top50) && data.top50.length > 0)
-          ? data.top50
-          : (data && Array.isArray(data.top20) ? data.top20 : null);
-        if (incoming) {
-          incoming.forEach((item: any) => {
-            if (!item.isBenchmark && (item.userId || item.id?.startsWith('user_')) && (item.todayProfit || 0) > 0) {
-              const uid = item.userId || item.id.replace('user_', '');
-              if (uid) realTradersMap.set(uid, item);
-            }
-          });
-          saveStoredGlobalLeaderboard(accountType, incoming);
-          const ch = getLeaderboardBroadcastChannel();
-          if (ch) {
-            ch.postMessage({
-              accountType,
-              top50: incoming,
-              top20: incoming,
-              lastUpdated: data.lastUpdated || Date.now(),
-            });
-          }
-          // Update Firestore master document with authoritative server list
-          if (!isQuotaExceeded()) {
-            const currentCycle = getDailyTradingCycleWindow(8);
-            const masterDocRef = doc(db, 'global_leaderboard', accountType);
-            setDoc(masterDocRef, cleanFirestorePayload({
-              accountType,
-              top50: incoming,
-              top20: incoming,
-              cycleStartTime: currentCycle.startTime,
-              lastUpdated: data.lastUpdated || Date.now(),
-              updatedAt: serverTimestamp(),
-            }), { merge: true }).catch(() => {});
-          }
-        }
-      }
-    } catch (_) {}
-
-    // 2. Authoritative persistence in Firestore: ALWAYS write user record to leaderboard_traders
+    // 1. Authoritative persistence in Firestore: ALWAYS write user record to leaderboard_traders first
     const currentCycle = getDailyTradingCycleWindow(8);
     if (!isQuotaExceeded()) {
       const traderDocRef = doc(db, 'leaderboard_traders', syncKey);
@@ -1067,6 +1033,40 @@ export async function syncUserToGlobalLeaderboard(
         if (isQuotaError(err)) markQuotaExceeded(err);
       });
     }
+
+    // 2. Sync to Backend in background (with timeout guard)
+    try {
+      safeFetch('/api/leaderboard/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ traderRecord, accountType }),
+      }, 600).then(async (res) => {
+        if (res && res.ok) {
+          const data = await res.json();
+          const incoming = (data && Array.isArray(data.top50) && data.top50.length > 0)
+            ? data.top50
+            : (data && Array.isArray(data.top20) ? data.top20 : null);
+          if (incoming) {
+            incoming.forEach((item: any) => {
+              if (!item.isBenchmark && (item.userId || item.id?.startsWith('user_')) && (item.todayProfit || 0) > 0) {
+                const uid = item.userId || item.id.replace('user_', '');
+                if (uid) realTradersMap.set(uid, item);
+              }
+            });
+            saveStoredGlobalLeaderboard(accountType, incoming);
+            const ch = getLeaderboardBroadcastChannel();
+            if (ch) {
+              ch.postMessage({
+                accountType,
+                top50: incoming,
+                top20: incoming,
+                lastUpdated: data.lastUpdated || Date.now(),
+              });
+            }
+          }
+        }
+      }).catch(() => {});
+    } catch (_) {}
   } catch (err) {
     if (!isQuotaError(err)) {
       console.warn('Leaderboard sync note:', err);

@@ -8,6 +8,7 @@ import {
   getMarketKey 
 } from './candleHistoryService';
 import { realTimeLiveMarketService } from './realTimeLiveMarketService';
+import { safeFetchJson } from './safeApi';
 
 // Single Verified Gold Live Price State (Direct from TradingView Master Feed)
 let currentGoldPrice: number | null = null;
@@ -97,7 +98,7 @@ export function initGoldLiveStream() {
  */
 export async function loadOrInitializeGoldCandles(
   timeframe: string,
-  requiredCount: number = 120
+  requiredCount: number = 500
 ): Promise<Candlestick[]> {
   const symbol = 'XAU/USD';
   const tfSecs = getTimeframeSeconds(timeframe);
@@ -107,31 +108,28 @@ export async function loadOrInitializeGoldCandles(
 
   // 1. Primary: Fetch 100% authentic live historical exchange klines directly from TradingView Master Feed
   try {
-    const realCandles = await realTimeLiveMarketService.fetchRealMarketCandles(symbol, timeframe, requiredCount);
+    const realCandles = await realTimeLiveMarketService.fetchRealMarketCandles(symbol, timeframe, Math.max(requiredCount, 500));
     if (realCandles && realCandles.length > 0) {
       const last = realCandles[realCandles.length - 1];
       broadcastGoldPrice(last.close);
-      saveCandlesToFirestore(symbol, timeframe, realCandles.slice(-requiredCount)).catch(() => {});
+      saveCandlesToFirestore(symbol, timeframe, realCandles.slice(-Math.max(requiredCount, 500))).catch(() => {});
       return realCandles;
     }
   } catch (_) {}
 
   // 2. Fallback: Fetch existing candles from Firestore
-  const firestoreCandles = await fetchCandlesFromFirestore(symbol, timeframe, requiredCount + 50);
+  const firestoreCandles = await fetchCandlesFromFirestore(symbol, timeframe, Math.max(requiredCount, 500) + 50);
   const validFirestore = firestoreCandles.filter(c => c.close >= 3000 && c.open >= 3000);
 
   if (validFirestore.length >= 20) {
-    return validFirestore.slice(-requiredCount);
+    return validFirestore.slice(-Math.max(requiredCount, 500));
   }
 
-  // 3. Fallback: Re-query /api/real-market-candles
+  // 3. Fallback: Re-query /api/real-market-candles (with timeout guard)
   try {
-    const res = await fetch(`/api/real-market-candles?symbol=XAU/USD&timeframe=${timeframe}&count=${requiredCount}`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data.candles && data.candles.length > 0) {
-        return data.candles;
-      }
+    const data = await safeFetchJson(`/api/real-market-candles?symbol=XAU/USD&timeframe=${timeframe}&count=${Math.max(requiredCount, 500)}`, {}, 5000);
+    if (data && data.candles && data.candles.length > 0) {
+      return data.candles;
     }
   } catch (_) {}
 

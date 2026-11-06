@@ -1,5 +1,6 @@
 import { db, isQuotaExceeded, isQuotaError } from './firebase';
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import { safeFetch, safeFetchJson } from './safeApi';
 
 export interface PaymentGatewayConfig {
   id: string;
@@ -339,13 +340,13 @@ export async function compressQrImage(file: File, maxWidth = 500, maxHeight = 50
 export async function saveGatewaysToFirestore(gateways: PaymentGatewayConfig[]): Promise<boolean> {
   saveStoredGateways(gateways);
 
-  // Sync to Express backend for immediate cross-device distribution
+  // Sync to Express backend for immediate cross-device distribution (with timeout guard)
   try {
-    fetch('/api/deposit-config', {
+    safeFetch('/api/deposit-config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ gateways })
-    }).catch(() => {});
+    }, 600).catch(() => {});
   } catch (_) {}
 
   try {
@@ -366,13 +367,13 @@ export async function saveGatewaysToFirestore(gateways: PaymentGatewayConfig[]):
 export async function saveRulesToFirestore(rules: DepositRulesConfig): Promise<boolean> {
   saveStoredDepositRules(rules);
 
-  // Sync to Express backend for immediate cross-device distribution
+  // Sync to Express backend for immediate cross-device distribution (with timeout guard)
   try {
-    fetch('/api/deposit-config', {
+    safeFetch('/api/deposit-config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ rules })
-    }).catch(() => {});
+    }, 600).catch(() => {});
   } catch (_) {}
 
   try {
@@ -397,43 +398,37 @@ export function subscribeToDepositConfig(
   // Always emit cached version first for instant 0ms UI load
   onUpdate(getStoredGateways(), getStoredDepositRules());
 
-  // Polling to server to guarantee sync even across networks/phones/desktops
-  const pollTimer = setInterval(async () => {
-    try {
-      const res = await fetch('/api/deposit-config');
-      if (res.ok) {
-        const data = await res.json();
-        let changed = false;
-        let curGateways = getStoredGateways();
-        let curRules = getStoredDepositRules();
+  // Initial fetch on mount (with safe timeout, zero repeated background polling)
+  safeFetchJson('/api/deposit-config', {}, 600)
+    .then(data => {
+      if (!data) return;
+      let changed = false;
+      let curGateways = getStoredGateways();
+      let curRules = getStoredDepositRules();
 
-        if (Array.isArray(data.gateways) && data.gateways.length > 0) {
-          curGateways = data.gateways;
-          saveStoredGateways(curGateways);
-          changed = true;
-        }
-        if (data.rules && typeof data.rules === 'object') {
-          curRules = { ...curRules, ...data.rules };
-          saveStoredDepositRules(curRules);
-          changed = true;
-        }
-        if (changed) {
-          onUpdate(curGateways, curRules);
-        }
+      if (Array.isArray(data.gateways) && data.gateways.length > 0) {
+        curGateways = data.gateways;
+        saveStoredGateways(curGateways);
+        changed = true;
       }
-    } catch (_) {}
-  }, 3500);
+      if (data.rules && typeof data.rules === 'object') {
+        curRules = { ...curRules, ...data.rules };
+        saveStoredDepositRules(curRules);
+        changed = true;
+      }
+      if (changed) {
+        onUpdate(curGateways, curRules);
+      }
+    })
+    .catch(() => {});
 
   // Focus refresh
   const handleFocus = async () => {
     try {
-      const res = await fetch('/api/deposit-config');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.gateways) && data.gateways.length > 0) {
-          saveStoredGateways(data.gateways);
-          onUpdate(data.gateways, data.rules || getStoredDepositRules());
-        }
+      const data = await safeFetchJson('/api/deposit-config', {}, 600);
+      if (data && Array.isArray(data.gateways) && data.gateways.length > 0) {
+        saveStoredGateways(data.gateways);
+        onUpdate(data.gateways, data.rules || getStoredDepositRules());
       }
     } catch (_) {}
   };
@@ -444,7 +439,6 @@ export function subscribeToDepositConfig(
 
   if (isQuotaExceeded()) {
     return () => {
-      clearInterval(pollTimer);
       if (typeof window !== 'undefined') window.removeEventListener('focus', handleFocus);
     };
   }
@@ -489,7 +483,6 @@ export function subscribeToDepositConfig(
   });
 
   return () => {
-    clearInterval(pollTimer);
     if (typeof window !== 'undefined') window.removeEventListener('focus', handleFocus);
     unsubscribe();
   };

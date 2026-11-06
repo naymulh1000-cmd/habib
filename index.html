@@ -151,7 +151,7 @@
         }
 
         window.__PAGE_LOAD_START_TIME__ = navStart;
-        window.__EXACT_SPLASH_DURATION__ = 300; // Ultra-fast instant entry like Exness/Quotex
+        window.__EXACT_SPLASH_DURATION__ = 120; // Ultra-fast instant entry like Exness/Quotex
         window.__SPLASH_DISMISSED__ = false;
 
         // Immediately check localStorage for customized branding logo to avoid any flash
@@ -182,9 +182,8 @@
           
           if (splash) {
             splash.style.pointerEvents = 'none';
-            splash.style.transition = 'opacity 0.3s ease-out, transform 0.3s ease-out';
+            splash.style.transition = 'opacity 0.15s ease-out';
             splash.style.opacity = '0';
-            splash.style.transform = 'scale(1.02)';
             setTimeout(function() {
               try {
                 if (splash && splash.parentNode) {
@@ -193,7 +192,7 @@
                   splash.remove();
                 }
               } catch (_) {}
-            }, 320);
+            }, 180);
           }
 
           if (typeof window.__ON_SPLASH_DISMISSED__ === 'function') {
@@ -203,15 +202,14 @@
 
         window.__DISMISS_SPLASH__ = dismissSplash;
 
-        // Calculate remaining time so entry is instant and snappy
-        var elapsedSinceClick = Date.now() - navStart;
-        var remainingTime = Math.max(50, Math.min(300, 300 - elapsedSinceClick));
-        setTimeout(dismissSplash, remainingTime);
-        // Fallback hard guarantee at 450ms max
-        setTimeout(dismissSplash, 450);
+        // Smooth 1.2s splash presentation allowing user to see the rotating ring logo animation, then clean fadeout
+        setTimeout(dismissSplash, 1200);
       })();
     </script>
     <style>
+      #app-splash-preloader {
+        pointer-events: none !important;
+      }
       @keyframes splashSpin {
         from { transform: rotate(0deg); }
         to { transform: rotate(360deg); }
@@ -289,7 +287,7 @@
     </style>
   </head>
   <body class="bg-[#0B0F19] text-[#F3F4F6]">
-    <div id="app-splash-preloader" style="position:fixed;inset:0;z-index:99999;background-color:#070A14;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden;user-select:none;transition:opacity 0.4s ease-out;">
+    <div id="app-splash-preloader" style="pointer-events:none !important;position:fixed;inset:0;z-index:99999;background-color:#070A14;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden;user-select:none;transition:opacity 0.2s ease-out;">
       <div class="splash-bg-glow"></div>
       <div style="position:relative;display:flex;align-items:center;justify-content:center;">
         <div class="splash-ring-1"></div>

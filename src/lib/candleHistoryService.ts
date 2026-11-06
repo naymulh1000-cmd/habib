@@ -25,6 +25,7 @@ import {
 import { loadOrInitializeGoldCandles, loadOlderGoldCandles } from './goldLiveDataService';
 import { realTimeLiveMarketService } from './realTimeLiveMarketService';
 import { customMarketEngine } from './customMarketEngine';
+import { safeFetch, safeFetchJson } from './safeApi';
 
 // Helper to sanitize symbol for Firestore collection key (e.g., 'EUR/USD' -> 'EUR_USD')
 export function getMarketKey(symbol: string, timeframe: string): string {
@@ -96,26 +97,22 @@ function checkQuotaError(err: any): boolean {
 // Versioned cache key to automatically flush older distorted candles
 const CANDLE_CACHE_VERSION = 'v7_quotex_grade_otc';
 
-// Helper to save candles into local storage backup
+// Throttled helper to save candles into local storage backup without blocking the UI
+let lastLocalStorageSaveTime = 0;
 function saveToLocalStorage(key: string, candles: Candlestick[]) {
+  const now = Date.now();
+  // Throttle to at most once per 15 seconds
+  if (now - lastLocalStorageSaveTime < 15000) return;
+  lastLocalStorageSaveTime = now;
+
   try {
     if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
-      const sliced = candles.slice(-100); // keep at most 100 in localStorage
+      const sliced = candles.slice(-25); // keep at most 25 in localStorage
       localStorage.setItem(`candle_cache_${CANDLE_CACHE_VERSION}_${key}`, JSON.stringify(sliced));
       localStorage.setItem('candle_cache_version', CANDLE_CACHE_VERSION);
     }
-  } catch (err: any) {
-    // If quota is exceeded, purge older bloated candle caches from previous versions
-    try {
-      if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
-        for (let i = localStorage.length - 1; i >= 0; i--) {
-          const k = localStorage.key(i);
-          if (k && k.startsWith('candle_cache_') && k !== `candle_cache_${CANDLE_CACHE_VERSION}_${key}`) {
-            localStorage.removeItem(k);
-          }
-        }
-      }
-    } catch (_) {}
+  } catch (_) {
+    // If quota error occurs, silently ignore without freezing main thread
   }
 }
 
@@ -124,7 +121,6 @@ function loadFromLocalStorage(key: string): Candlestick[] | null {
     if (typeof window !== 'undefined') {
       const storedVer = localStorage.getItem('candle_cache_version');
       if (storedVer !== CANDLE_CACHE_VERSION) {
-        // Clear previous cache version
         return null;
       }
       const stored = localStorage.getItem(`candle_cache_${CANDLE_CACHE_VERSION}_${key}`);
@@ -232,7 +228,7 @@ export async function saveCandlesToFirestore(
 }
 
 /**
- * Save or update a single active/completed candle to Firestore in background
+ * Save or update a single active/completed candle in memory cache and background backend sync
  */
 export async function saveSingleCandleToFirestore(
   symbol: string,
@@ -241,41 +237,18 @@ export async function saveSingleCandleToFirestore(
 ): Promise<void> {
   const marketKey = getMarketKey(symbol, timeframe);
   
-  // Update local memory cache and localStorage
+  // Update local memory cache instantly
   const existing = candleMemoryCache[marketKey] || [];
   candleMemoryCache[marketKey] = mergeAndDeduplicateCandles(existing, [candle]);
-  saveToLocalStorage(marketKey, candleMemoryCache[marketKey]);
 
-  // Sync to backend OTC finalized candles cache so all devices share the exact same historical candle
+  // Sync to backend OTC finalized candles cache in background with timeout guard
   try {
-    fetch('/api/otc-candles/finalize', {
+    safeFetch('/api/otc-candles/finalize', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ symbol, timeframe, candle })
-    }).catch(() => {});
+    }, 600).catch(() => {});
   } catch (_) {}
-
-  if (isFirestoreQuotaExceeded) return;
-
-  try {
-    const docRef = doc(db, 'market_candles', marketKey, 'candles', candle.time.toString());
-    await setDoc(docRef, {
-      symbol,
-      timeframe,
-      time: candle.time,
-      timestamp: candle.timestamp || candle.time,
-      open: candle.open,
-      high: candle.high,
-      low: candle.low,
-      close: candle.close,
-      volume: candle.volume ?? 100,
-      updatedAt: new Date().toISOString()
-    }, { merge: true });
-  } catch (err) {
-    if (!checkQuotaError(err)) {
-      console.warn(`[CandleHistory] Single candle save note for ${marketKey}:`, err);
-    }
-  }
 }
 
 /**
@@ -545,7 +518,7 @@ export async function loadOrInitializeCandles(
   requiredCount: number = 120
 ): Promise<Candlestick[]> {
   if (market?.symbol === 'XAU/USD' || market?.id === 'xau_usd') {
-    return loadOrInitializeGoldCandles(timeframe, Math.min(requiredCount, 120));
+    return loadOrInitializeGoldCandles(timeframe, Math.max(requiredCount, 500));
   }
 
   // Authoritative OTC Binary Options Markets check
@@ -562,12 +535,12 @@ export async function loadOrInitializeCandles(
   if (!isOtc && market?.isRealMarket && market?.category !== 'otc') {
     const marketKey = getMarketKey(market.symbol, timeframe);
     const cachedMem = candleMemoryCache[marketKey];
-    if (cachedMem && cachedMem.length >= Math.min(requiredCount, 40)) {
+    if (cachedMem && cachedMem.length >= Math.max(requiredCount, 500)) {
       return cachedMem;
     }
 
     try {
-      const realCandles = await realTimeLiveMarketService.fetchRealMarketCandles(market.symbol, timeframe, requiredCount);
+      const realCandles = await realTimeLiveMarketService.fetchRealMarketCandles(market.symbol, timeframe, Math.max(requiredCount, 500));
       if (realCandles && realCandles.length > 0) {
         candleMemoryCache[marketKey] = realCandles;
         saveToLocalStorage(marketKey, realCandles);
@@ -575,15 +548,12 @@ export async function loadOrInitializeCandles(
       }
     } catch (_) {}
 
-    // Fallback direct endpoint query for real market feed
+    // Fallback direct endpoint query for real market feed (with timeout guard)
     try {
-      const res = await fetch(`/api/real-market-candles?symbol=${encodeURIComponent(market.symbol)}&timeframe=${encodeURIComponent(timeframe)}&count=${requiredCount}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.candles && data.candles.length > 0) {
-          candleMemoryCache[marketKey] = data.candles;
-          return data.candles;
-        }
+      const data = await safeFetchJson(`/api/real-market-candles?symbol=${encodeURIComponent(market.symbol)}&timeframe=${encodeURIComponent(timeframe)}&count=${Math.max(requiredCount, 500)}`, {}, 5000);
+      if (data && data.candles && data.candles.length > 0) {
+        candleMemoryCache[marketKey] = data.candles;
+        return data.candles;
       }
     } catch (_) {}
 
@@ -647,29 +617,26 @@ export async function loadOrInitializeCandles(
   if (isOtc) {
     const cachedLocal = candleMemoryCache[marketKey] || loadFromLocalStorage(marketKey) || [];
     try {
-      const res = await fetch(`/api/otc-candles/${encodeURIComponent(market.symbol)}/${encodeURIComponent(timeframe)}?count=${requiredCount}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.candles && Array.isArray(data.candles) && data.candles.length > 0) {
-          const sanitized = [...data.candles];
-          for (let i = 1; i < sanitized.length; i++) {
-            sanitized[i].open = sanitized[i - 1].close;
-            sanitized[i].high = Math.max(sanitized[i].high, sanitized[i].open, sanitized[i].close);
-            sanitized[i].low = Math.min(sanitized[i].low, sanitized[i].open, sanitized[i].close);
-          }
-          candleMemoryCache[marketKey] = sanitized;
-          saveToLocalStorage(marketKey, sanitized);
-          return sanitized;
+      const data = await safeFetchJson(`/api/otc-candles/${encodeURIComponent(market.symbol)}/${encodeURIComponent(timeframe)}?count=${Math.max(600, requiredCount)}`, {}, 4000);
+      if (data && data.candles && Array.isArray(data.candles) && data.candles.length > 0) {
+        const sanitized = [...data.candles];
+        for (let i = 1; i < sanitized.length; i++) {
+          sanitized[i].open = sanitized[i - 1].close;
+          sanitized[i].high = Math.max(sanitized[i].high, sanitized[i].open, sanitized[i].close);
+          sanitized[i].low = Math.min(sanitized[i].low, sanitized[i].open, sanitized[i].close);
         }
+        candleMemoryCache[marketKey] = sanitized;
+        saveToLocalStorage(marketKey, sanitized);
+        return sanitized;
       }
     } catch (_) {}
 
     // Synchronous pure deterministic generation fallback merged with cached finalized candles:
-    const targetStartTime = currentBucketTime - (requiredCount * timeStepMs);
+    const targetStartTime = currentBucketTime - (Math.max(600, requiredCount) * timeStepMs);
     const historical = generateDeterministicCandleRange(market, timeframe, targetStartTime, currentBucketTime - timeStepMs);
     const lastHistClose = historical.length > 0 ? historical[historical.length - 1].close : undefined;
     const { activeCandle } = getDeterministicActiveCandle(market, currentBucketTime, now, tfSecs, lastHistClose);
-    const fullCandles = mergeAndDeduplicateCandles(historical, [...cachedLocal, activeCandle]);
+    const fullCandles = [...historical, activeCandle];
 
     const sanitizedFallback = [...fullCandles];
     for (let i = 1; i < sanitizedFallback.length; i++) {
@@ -766,6 +733,16 @@ export async function loadOlderHistoricalCandles(
 ): Promise<Candlestick[]> {
   if (market?.symbol === 'XAU/USD' || market?.id === 'xau_usd') {
     return loadOlderGoldCandles(timeframe, oldestCandleTime, count);
+  }
+
+  const isOtc = market?.category === 'otc' || Boolean(market?.symbol && market.symbol.toUpperCase().includes('OTC')) || market?.isRealMarket === false;
+  if (isOtc) {
+    const tfSecs = getTimeframeSeconds(timeframe);
+    const timeStepMs = tfSecs * 1000;
+    const toTime = oldestCandleTime - timeStepMs;
+    const fromTime = toTime - ((count || 50) * timeStepMs);
+    const olderDeterministic = generateDeterministicCandleRange(market, timeframe, fromTime, toTime);
+    return olderDeterministic;
   }
 
   // Real live markets (Forex: EUR/USD, GBP/USD, USD/JPY, AUD/USD, USD/CAD; Crypto: BTC, ETH, SOL)

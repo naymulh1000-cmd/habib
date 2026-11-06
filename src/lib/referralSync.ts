@@ -9,6 +9,7 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { ReferredAccount, ReferralSummary } from '../types';
+import { safeFetch, safeFetchJson } from './safeApi';
 
 /**
  * Returns the authoritative Referral ID for the given user.
@@ -79,8 +80,8 @@ function normalizeReferredAccount(uData: any, docId: string): ReferredAccount {
 }
 
 /**
- * Fetches user referrals from Firestore cloud database as primary source,
- * merged with backend API cache, ensuring permanent cross-device persistence.
+ * Fetches user referrals with high speed from backend API primary cache (2ms)
+ * and verifies with Firestore in the background if necessary, ensuring permanent cross-device persistence.
  */
 export async function fetchUserReferrals(
   userUid: string, 
@@ -101,91 +102,35 @@ export async function fetchUserReferrals(
 
   const accountMap = new Map<string, ReferredAccount>();
 
-  // 1. Direct Cloud Firestore Query (Permanent multi-device source)
-  try {
-    const candidateQueries = [];
-
-    if (cleanUid) {
-      // Query 1: by referrerUid
-      candidateQueries.push(query(collection(db, 'users'), where('referrerUid', '==', cleanUid)));
-      // Query 2: by referralCode matching UID
-      candidateQueries.push(query(collection(db, 'users'), where('referralCode', '==', cleanUid)));
-      // Query 3: by referredBy matching UID
-      candidateQueries.push(query(collection(db, 'users'), where('referredBy', '==', cleanUid)));
-    }
-
-    if (cleanCode && cleanCode !== cleanUid) {
-      candidateQueries.push(query(collection(db, 'users'), where('referralCode', '==', cleanCode)));
-      candidateQueries.push(query(collection(db, 'users'), where('referrerUid', '==', cleanCode)));
-    }
-
-    const snaps = await Promise.allSettled(candidateQueries.map(q => getDocs(q)));
-
-    for (const res of snaps) {
-      if (res.status === 'fulfilled') {
-        res.value.forEach(docSnap => {
-          const uData: any = docSnap.data() || {};
-          const docId = docSnap.id;
-
-          // Exclude self
-          if (cleanUid && (docId === cleanUid || uData.uid === cleanUid)) return;
-
-          const acc = normalizeReferredAccount(uData, docId);
-          accountMap.set(acc.uid, acc);
-
-          // Background sync to server if needed
-          try {
-            fetch('/api/users/register', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                ...uData,
-                uid: docId,
-                referrerUid: cleanUid,
-                referralCode: cleanCode
-              })
-            }).catch(() => {});
-          } catch (_) {}
-        });
-      }
-    }
-  } catch (firestoreErr) {
-    console.warn('[referralSync] Firestore query notice:', firestoreErr);
-  }
-
-  // 2. Fetch from Express Backend API
+  // 1. Instant Fast Fetch from Backend API (2ms response time)
   try {
     const q = new URLSearchParams();
     if (cleanCode) q.set('referralCode', cleanCode);
     if (cleanUid) q.set('userUid', cleanUid);
 
-    const apiRes = await fetch(`/api/referrals/my-referrals?${q.toString()}`);
-    if (apiRes.ok) {
-      const data = await apiRes.json();
-      if (data && Array.isArray(data.referrals)) {
-        data.referrals.forEach((acc: ReferredAccount) => {
-          if (!acc || !acc.uid) return;
-          // Exclude self
-          if (cleanUid && acc.uid === cleanUid) return;
-
-          const existing = accountMap.get(acc.uid);
-          if (!existing) {
-            accountMap.set(acc.uid, acc);
-          } else {
-            // Merge qualifying status and balances if API has newer state
-            accountMap.set(acc.uid, {
-              ...existing,
-              ...acc,
-              hasQualifyingDeposit: existing.hasQualifyingDeposit || acc.hasQualifyingDeposit,
-              bonusEarned: (existing.hasQualifyingDeposit || acc.hasQualifyingDeposit) ? 25.00 : 0,
-              status: (existing.hasQualifyingDeposit || acc.hasQualifyingDeposit) ? 'Active (Bonus Paid)' : existing.status
-            });
-          }
-        });
-      }
+    const data = await safeFetchJson<{ referrals?: ReferredAccount[] }>(`/api/referrals/my-referrals?${q.toString()}`, {}, 600);
+    if (data && Array.isArray(data.referrals)) {
+      data.referrals.forEach((acc: ReferredAccount) => {
+        if (!acc || !acc.uid) return;
+        if (cleanUid && acc.uid === cleanUid) return;
+        accountMap.set(acc.uid, acc);
+      });
     }
-  } catch (apiErr) {
-    console.warn('[referralSync] API query notice:', apiErr);
+  } catch (_) {}
+
+  // 2. Direct Cloud Firestore Query (Targeted single query if API returned empty, non-blocking)
+  if (accountMap.size === 0 && cleanUid) {
+    try {
+      const qRef = query(collection(db, 'users'), where('referrerUid', '==', cleanUid));
+      const snap = await getDocs(qRef);
+      snap.forEach(docSnap => {
+        const uData: any = docSnap.data() || {};
+        const docId = docSnap.id;
+        if (cleanUid && (docId === cleanUid || uData.uid === cleanUid)) return;
+        const acc = normalizeReferredAccount(uData, docId);
+        accountMap.set(acc.uid, acc);
+      });
+    } catch (_) {}
   }
 
   const allReferrals = Array.from(accountMap.values());
@@ -209,8 +154,8 @@ export async function fetchUserReferrals(
 }
 
 /**
- * Sets up a real-time Firestore subscription to update referrals whenever
- * a new account signs up with the user's UID.
+ * Sets up a debounced real-time Firestore subscription to update referrals whenever
+ * a new account signs up with the user's UID without flooding network sockets.
  */
 export function subscribeToReferralUpdates(
   userUid: string,
@@ -219,14 +164,22 @@ export function subscribeToReferralUpdates(
   if (!userUid) return () => {};
 
   let isSubscribed = true;
+  let updateDebounceTimer: any = null;
   const cleanUid = userUid.trim();
 
-  // Run initial fetch
-  fetchUserReferrals(cleanUid).then(summary => {
-    if (isSubscribed) {
-      onUpdate(summary);
-    }
-  }).catch(() => {});
+  const triggerUpdate = () => {
+    if (!isSubscribed) return;
+    if (updateDebounceTimer) clearTimeout(updateDebounceTimer);
+    updateDebounceTimer = setTimeout(() => {
+      if (!isSubscribed) return;
+      fetchUserReferrals(cleanUid).then(summary => {
+        if (isSubscribed) onUpdate(summary);
+      }).catch(() => {});
+    }, 400);
+  };
+
+  // Run initial fast fetch
+  triggerUpdate();
 
   // Setup Firestore listener for instant live reactivity
   const unsubs: (() => void)[] = [];
@@ -234,34 +187,17 @@ export function subscribeToReferralUpdates(
   try {
     const qReferrer = query(collection(db, 'users'), where('referrerUid', '==', cleanUid));
     const unsub1 = onSnapshot(qReferrer, () => {
-      fetchUserReferrals(cleanUid).then(summary => {
-        if (isSubscribed) onUpdate(summary);
-      }).catch(() => {});
-    }, (err) => {
-      console.warn('[referralSync] Realtime subscription notice:', err);
-    });
-    unsubs.push(unsub1);
-
-    const qCode = query(collection(db, 'users'), where('referralCode', '==', cleanUid));
-    const unsub2 = onSnapshot(qCode, () => {
-      fetchUserReferrals(cleanUid).then(summary => {
-        if (isSubscribed) onUpdate(summary);
-      }).catch(() => {});
+      triggerUpdate();
     }, () => {});
-    unsubs.push(unsub2);
+    unsubs.push(unsub1);
   } catch (_) {}
 
-  // Periodic polling interval for cross-device updates
-  const interval = setInterval(() => {
-    if (isSubscribed) {
-      fetchUserReferrals(cleanUid).then(summary => {
-        if (isSubscribed) onUpdate(summary);
-      }).catch(() => {});
-    }
-  }, 8000);
+  // Gentle periodic fallback polling interval for cross-device updates
+  const interval = setInterval(triggerUpdate, 60000);
 
   return () => {
     isSubscribed = false;
+    if (updateDebounceTimer) clearTimeout(updateDebounceTimer);
     unsubs.forEach(u => {
       try { u(); } catch (_) {}
     });

@@ -88,6 +88,14 @@ import {
 import { onGoldPriceUpdate, onGoldLiveStatusChange, isGoldLiveAvailable } from '../lib/goldLiveDataService';
 import { safeFormatTime, safeFormatTimeWithSeconds, safeFormatDate, safeFormatDateTime, safeGetTime } from '../lib/dateUtils';
 import { calculateQuotexTiming, formatQuotexCountdown, QuotexTimingInfo } from '../lib/quotexBinaryLogic';
+import { safeFetch, safeFetchJson } from '../lib/safeApi';
+import { 
+  getBonusCategoryByTier, 
+  deriveTierFromBaseAmount, 
+  getBonusDailyProfitState, 
+  recordBonusTradeProfit, 
+  checkBonusChallengeStatus 
+} from '../lib/bonusRules';
 
 const formatCandleCountdown = (remSecs: number, tf: string): string => {
   if (remSecs <= 0) return '00:00';
@@ -211,6 +219,7 @@ interface TradingTerminalViewProps {
   userUid?: string;
   userDisplayName?: string;
   userAvatar?: string;
+  depositBonusGranted?: number;
   onTradeExecuted?: (trade: ActiveTrade) => void;
   activeTrades?: ActiveTrade[];
   setActiveTrades?: React.Dispatch<React.SetStateAction<ActiveTrade[]>>;
@@ -221,6 +230,7 @@ interface TradingTerminalViewProps {
   isSuperAdmin?: boolean;
   isAdmin?: boolean;
   onBack?: () => void;
+  initialFullscreen?: boolean;
 }
 
 interface Candlestick {
@@ -256,6 +266,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
   userUid,
   userDisplayName,
   userAvatar,
+  depositBonusGranted,
   onTradeExecuted,
   activeTrades: externalActiveTrades,
   setActiveTrades: externalSetActiveTrades,
@@ -265,7 +276,8 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
   initialMarketId,
   isSuperAdmin,
   isAdmin,
-  onBack
+  onBack,
+  initialFullscreen
 }) => {
   // 1. Markets & Selection State
   const [markets, setMarkets] = useState<MarketPairConfig[]>(getStoredMarkets());
@@ -326,16 +338,33 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
   const [candles, setCandles] = useState<Candlestick[]>([]);
   const [currentTickPrice, setCurrentTickPrice] = useState<number>(1.29410);
   const currentTickPriceRef = useRef<number>(currentTickPrice);
+  const smoothTickPriceRef = useRef<number>(currentTickPrice);
+  const smoothPriceRangeRef = useRef<{ min: number; max: number } | null>(null);
+  const [smoothRenderTrigger, setSmoothRenderTrigger] = useState<number>(0);
+  const rafIdRef = useRef<number | null>(null);
 
   useEffect(() => {
     currentTickPriceRef.current = currentTickPrice;
   }, [currentTickPrice]);
+
+  useEffect(() => {
+    smoothTickPriceRef.current = currentTickPrice;
+    smoothPriceRangeRef.current = null;
+  }, [selectedMarketId]);
   const [priceChangeDirection, setPriceChangeDirection] = useState<'up' | 'down' | 'neutral'>('neutral');
   const [candleCountdown, setCandleCountdown] = useState<number>(60);
   const [historicalOffset, setHistoricalOffset] = useState<number>(0);
   const [editingSlTpTrade, setEditingSlTpTrade] = useState<ActiveTrade | null>(null);
   const [editSlValue, setEditSlValue] = useState<string>('');
   const [editTpValue, setEditTpValue] = useState<string>('');
+  const [bonusRefreshTrigger, setBonusRefreshTrigger] = useState<number>(0);
+
+  // Bonus Account Challenge & Daily Profit Cap State (Single Source of Truth)
+  const bonusBase = (depositBonusGranted && depositBonusGranted > 0) ? depositBonusGranted : (balances.bonus > 0 ? 250 : 0);
+  const bonusTier = deriveTierFromBaseAmount(bonusBase);
+  const bonusCategory = getBonusCategoryByTier(bonusTier);
+  const bonusDailyState = getBonusDailyProfitState(userUid, bonusBase, bonusTier);
+  const bonusChallenge = checkBonusChallengeStatus(balances.bonus || 0, bonusBase);
 
   // 3. Trade Input Form State
   // Forex Inputs: Persistent Lot Size across refreshes
@@ -641,46 +670,61 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       }
     };
 
-    // Cross-device continuous polling from persistent central backend
+    // Non-blocking background sync with safe timeout and circuit breaker
+    let isCentralSyncBusy = false;
+    let centralSyncFailCount = 0;
     const syncFromCentralStore = async () => {
-      if (!userUid) return;
+      if (!userUid || isCentralSyncBusy || centralSyncFailCount >= 2) return;
+      isCentralSyncBusy = true;
       try {
-        const res = await fetch(`/api/users/trades/${encodeURIComponent(userUid)}?email=${encodeURIComponent(userEmail || '')}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.success) {
-            if (data.closed && Array.isArray(data.closed) && data.closed.length > 0) {
-              registerSettledTradeIds(data.closed.map((c: any) => c.id));
-              setClosedTrades(prev => {
-                const combined = [...data.closed, ...prev];
-                const seen = new Set<string>();
-                return combined.filter(t => {
-                  if (!t.id || seen.has(t.id)) return false;
-                  seen.add(t.id);
-                  return true;
-                });
+        const data = await safeFetchJson<{
+          success?: boolean;
+          closed?: any[];
+          active?: any[];
+        }>(`/api/users/trades/${encodeURIComponent(userUid)}?email=${encodeURIComponent(userEmail || '')}`, 600);
+        if (data && data.success) {
+          centralSyncFailCount = 0;
+          if (data.closed && Array.isArray(data.closed) && data.closed.length > 0) {
+            registerSettledTradeIds(data.closed.map((c: any) => c.id));
+            setClosedTrades(prev => {
+              const combined = [...data.closed!, ...prev];
+              const seen = new Set<string>();
+              return combined.filter(t => {
+                if (!t.id || seen.has(t.id)) return false;
+                seen.add(t.id);
+                return true;
               });
-            }
-            if (data.active && Array.isArray(data.active)) {
-              setActiveTrades(prev => {
-                const currentIds = new Set(prev.map(t => t.id));
-                const missing = data.active.filter((t: any) => 
-                  !currentIds.has(t.id) && 
-                  t.status === 'OPEN' && 
-                  !isTradeSettled(t.id)
-                );
-                if (missing.length === 0) return prev;
-                return [...missing, ...prev];
-              });
-            }
+            });
           }
+          if (data.active && Array.isArray(data.active)) {
+            setActiveTrades(prev => {
+              const currentIds = new Set(prev.map(t => t.id));
+              const missing = data.active!.filter((t: any) => 
+                !currentIds.has(t.id) && 
+                t.status === 'OPEN' && 
+                !isTradeSettled(t.id)
+              );
+              if (missing.length === 0) return prev;
+              return [...missing, ...prev];
+            });
+          }
+        } else {
+          centralSyncFailCount++;
         }
-      } catch (_) {}
+      } catch (_) {
+        centralSyncFailCount++;
+      } finally {
+        isCentralSyncBusy = false;
+      }
     };
 
     fetchFirestoreTrades();
     syncFromCentralStore();
-    const intervalTimer = setInterval(syncFromCentralStore, 3000);
+    const intervalTimer = setInterval(() => {
+      if (centralSyncFailCount < 2) {
+        syncFromCentralStore();
+      }
+    }, 20000);
 
     return () => clearInterval(intervalTimer);
   }, [userEmail, userUid, externalActiveTrades]);
@@ -701,7 +745,20 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
   const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [dragStart, setDragStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(() => {
+    if (initialFullscreen !== undefined) return initialFullscreen;
+    if (typeof window !== 'undefined') {
+      return window.innerWidth < 1024;
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      setIsFullscreen(true);
+    }
+  }, [initialTradingMode]);
+
   const [showFullscreenAccountMenu, setShowFullscreenAccountMenu] = useState<boolean>(false);
   const [showFullscreenTimeframeMenu, setShowFullscreenTimeframeMenu] = useState<boolean>(false);
   const [showFullscreenTradesModal, setShowFullscreenTradesModal] = useState<boolean>(false);
@@ -796,7 +853,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
     if (!minPrice || !maxPrice || maxPrice <= minPrice) return null;
     const baseScaleY = h - ((priceVal - minPrice) / (maxPrice - minPrice)) * (h - 30);
     const centerY = h / 2;
-    const effectiveYZoom = zoomLevel * priceZoomLevel;
+    const effectiveYZoom = priceZoomLevel;
     const yPx = (baseScaleY - centerY) * effectiveYZoom + centerY + panOffset.y;
     return (yPx / totH) * 100;
   };
@@ -809,7 +866,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
     if (!minPrice || !maxPrice || maxPrice <= minPrice) return currentTickPrice || 1.08500;
     const yPx = (yPct / 100) * totH;
     const centerY = h / 2;
-    const effectiveYZoom = zoomLevel * priceZoomLevel;
+    const effectiveYZoom = priceZoomLevel;
     const baseScaleY = (yPx - panOffset.y - centerY) / effectiveYZoom + centerY;
     const priceVal = minPrice + ((h - baseScaleY) / (h - 30)) * (maxPrice - minPrice);
     return Number(priceVal.toFixed(activeMarket.precision || 5));
@@ -1120,7 +1177,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         const h = bounds.chartHeight || 300;
         const dyPx = (dyPct / 100) * height;
         const priceRange = Math.max(0.00001, bounds.maxPrice - bounds.minPrice);
-        const effectiveYZoom = zoomLevel * priceZoomLevel;
+        const effectiveYZoom = priceZoomLevel;
         const deltaPrice = - (dyPx / (Math.max(0.1, effectiveYZoom) * Math.max(10, h - 30))) * priceRange;
 
         const candleWidth = Math.max(2, Math.floor(14 * zoomLevel));
@@ -2259,7 +2316,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         e.touches[0].clientY - e.touches[1].clientY
       );
       const delta = (dist - pinchDistRef.current) * 0.008;
-      setZoomLevel(prev => Math.min(3.5, Math.max(0.2, prev + delta)));
+      setZoomLevel(prev => Math.min(3.5, Math.max(0.15, prev + delta)));
       pinchDistRef.current = dist;
     }
   };
@@ -2272,8 +2329,8 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
 
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
-    const delta = e.deltaY < 0 ? 0.15 : -0.15;
-    setZoomLevel(prev => Math.min(3.5, Math.max(0.2, prev + delta)));
+    const delta = e.deltaY < 0 ? 0.12 : -0.12;
+    setZoomLevel(prev => Math.min(3.5, Math.max(0.15, Number((prev + delta).toFixed(2)))));
   };
 
   const handleZoomIn = () => {
@@ -2281,7 +2338,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
   };
 
   const handleZoomOut = () => {
-    setZoomLevel(prev => Math.max(0.2, Number((prev - 0.15).toFixed(2))));
+    setZoomLevel(prev => Math.max(0.15, Number((prev - 0.15).toFixed(2))));
   };
 
   const handleResetChart = () => {
@@ -2390,27 +2447,21 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       localStorage.setItem('forex_admin_radar_active', String(next));
     } catch (_) {}
 
-    let nextExposure = exposureControlEnabled;
     if (next) {
-      nextExposure = false;
-      setExposureControlEnabled(false);
-      try {
-        localStorage.setItem('forex_admin_exposure_control', 'false');
-      } catch (_) {}
       setPanOffset(p => ({ ...p, x: 0 }));
       setIsRadarHudExpanded(true);
-      showNotification('👑 Radar Predictor: ON (5-Candle future forecast active on chart)', 'success');
+      showNotification('👑 Radar Predictor: ON (5-Candle future ghost forecast active on chart)', 'success');
     } else {
+      setUpcomingPredictions([]);
       showNotification('⚪ Radar Predictor: OFF', 'danger');
     }
 
-    try {
-      await fetch('/api/otc/admin-mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ adminPredictorMode: next, exposureControlEnabled: nextExposure })
-      });
-    } catch (_) {}
+    // Non-blocking safe notification to backend
+    safeFetch('/api/otc/admin-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminPredictorMode: next, exposureControlEnabled })
+    }, 3000).catch(() => {});
   };
 
   const [exposureControlEnabled, setExposureControlEnabled] = useState<boolean>(() => {
@@ -2429,38 +2480,59 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
     netExposure: number;
     biasDirection: 'UP' | 'DOWN' | 'NEUTRAL';
     totalOrders?: number;
+    orders?: any[];
   } | null>(null);
 
-  // Synchronize active market live exposure metrics from server
+  // Synchronize active market live exposure metrics (continuous, resilient sync)
   useEffect(() => {
-    const fetchOtcExposure = () => {
+    let exposureInFlight = false;
+    let nextExposureAttempt = 0;
+
+    const fetchOtcExposure = async () => {
+      const now = Date.now();
+      if (exposureInFlight || now < nextExposureAttempt) return;
+      exposureInFlight = true;
       try {
-        fetch('/api/otc/exposure')
-          .then(res => res.json())
-          .then(data => {
-            if (data && data.success) {
-              if (typeof data.exposureControlEnabled === 'boolean') {
-                setExposureControlEnabled(data.exposureControlEnabled);
-                try {
-                  localStorage.setItem('forex_admin_exposure_control', String(data.exposureControlEnabled));
-                } catch (_) {}
-              }
-              if (activeMarket && data.marketsExposure) {
-                const sym = (activeMarket.symbol || '').trim().toUpperCase();
-                const exp = data.marketsExposure[sym] || null;
-                setActiveMarketExposure(exp);
-              }
-            }
-          })
-          .catch(() => {});
-      } catch (_) {}
+        const data = await safeFetchJson<{
+          success?: boolean;
+          exposureControlEnabled?: boolean;
+          adminPredictorMode?: boolean;
+          marketsExposure?: Record<string, any>;
+        }>('/api/otc/exposure', 3000);
+
+        if (data && data.success) {
+          nextExposureAttempt = 0;
+          if (typeof data.exposureControlEnabled === 'boolean') {
+            setExposureControlEnabled(data.exposureControlEnabled);
+            try {
+              localStorage.setItem('forex_admin_exposure_control', String(data.exposureControlEnabled));
+            } catch (_) {}
+          }
+          if (activeMarket && data.marketsExposure) {
+            const sym = (activeMarket.symbol || '').trim().toUpperCase();
+            const exp = data.marketsExposure[sym] || null;
+            setActiveMarketExposure(exp);
+          }
+        } else {
+          nextExposureAttempt = now + 2000;
+        }
+      } catch (_) {
+        nextExposureAttempt = now + 2000;
+      } finally {
+        exposureInFlight = false;
+      }
     };
 
     fetchOtcExposure();
-    const interval = setInterval(fetchOtcExposure, 1500);
+    const interval = setInterval(fetchOtcExposure, 2000);
+
     const handleStorageChange = (e: StorageEvent) => {
       if (e.key === 'forex_admin_exposure_control') {
-        setExposureControlEnabled(e.newValue === 'true');
+        const isExp = e.newValue === 'true';
+        setExposureControlEnabled(isExp);
+      } else if (e.key === 'forex_admin_radar_active') {
+        const isRadar = e.newValue === 'true';
+        setAdminRadarActive(isRadar);
       }
     };
     window.addEventListener('storage', handleStorageChange);
@@ -2468,7 +2540,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       clearInterval(interval);
       window.removeEventListener('storage', handleStorageChange);
     };
-  }, [activeMarket?.symbol]);
+  }, [activeMarket?.symbol, adminRadarActive]);
 
   const handleToggleExposureControl = async () => {
     const nextState = !exposureControlEnabled;
@@ -2477,36 +2549,17 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       localStorage.setItem('forex_admin_exposure_control', String(nextState));
     } catch (_) {}
 
-    let nextPredictor = adminRadarActive;
     if (nextState) {
-      showNotification('🛡️ 5S Loss Shield: ON (Trades will automatically settle in LOSS in the last 5 seconds)', 'danger');
-      if (isAdminUser) {
-        nextPredictor = false;
-        setAdminRadarActive(false);
-        try {
-          localStorage.setItem('forex_admin_radar_active', 'false');
-        } catch (_) {}
-      }
+      showNotification('🛡️ 5S Loss Shield: ON (Live balance trades smoothly steer to loss in last 15-20s)', 'danger');
     } else {
-      showNotification('⚪ 5S Loss Shield: OFF (Admin 5-Candle future forecast active on chart)', 'success');
-      // When 5s loss is OFF: Admin chart displays the 5 future candles
-      if (isAdminUser) {
-        nextPredictor = true;
-        setAdminRadarActive(true);
-        setIsRadarHudExpanded(true);
-        try {
-          localStorage.setItem('forex_admin_radar_active', 'true');
-        } catch (_) {}
-      }
+      showNotification('⚪ 5S Loss Shield: OFF (Market moves naturally)', 'success');
     }
 
-    try {
-      await fetch('/api/otc/admin-mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ adminPredictorMode: nextPredictor, exposureControlEnabled: nextState })
-      });
-    } catch (_) {}
+    safeFetch('/api/otc/admin-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminPredictorMode: adminRadarActive, exposureControlEnabled: nextState })
+    }, 3000).catch(() => {});
   };
 
   const isCurrentMarketOTC = Boolean(
@@ -2524,25 +2577,40 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       return;
     }
 
-    // When 5S LOSS is ON, radar predictor is hidden:
-    if (exposureControlEnabled || !adminRadarActive) {
+    // When 5S Loss button is ON, dynamic risk control steers the market.
+    // When 5S Loss button is OFF, upcoming 5 candles forecast is actively displayed!
+    if (exposureControlEnabled) {
       setUpcomingPredictions([]);
       return;
     }
 
-    const refreshPredictions = () => {
+    const refreshPredictions = async () => {
       try {
+        const sym = encodeURIComponent(activeMarket.symbol);
+        const data = await safeFetchJson<{ success?: boolean; predictions?: CandlePredictionMetrics[] }>(
+          `/api/admin/prediction-feed?symbol=${sym}&timeframe=${timeframe}`,
+          2000
+        );
+        if (data && data.success && Array.isArray(data.predictions) && data.predictions.length > 0) {
+          setUpcomingPredictions(data.predictions.slice(0, 5));
+          return;
+        }
         const preds = customMarketEngine.getUpcomingCandlesPreview(activeMarket, 5, timeframe as TimeframeId);
         setUpcomingPredictions(preds);
-      } catch (err) {
-        console.warn('Radar prediction calculation notice:', err);
+      } catch (_) {
+        try {
+          const preds = customMarketEngine.getUpcomingCandlesPreview(activeMarket, 5, timeframe as TimeframeId);
+          setUpcomingPredictions(preds);
+        } catch (err) {
+          console.warn('Radar prediction calculation notice:', err);
+        }
       }
     };
 
     refreshPredictions();
     const interval = setInterval(refreshPredictions, 1000);
     return () => clearInterval(interval);
-  }, [isAdminUser, adminRadarActive, exposureControlEnabled, isCurrentMarketOTC, activeMarket?.symbol, timeframe]);
+  }, [isAdminUser, exposureControlEnabled, isCurrentMarketOTC, activeMarket?.symbol, timeframe]);
 
   const userUidRef = useRef(userUid);
   useEffect(() => {
@@ -2689,20 +2757,11 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       // Ultra-fast lightweight initial candle buffer (70-130 candles for instant 0.1s mobile rendering)
       // Older historical bars smoothly lazy-load when user scrolls/drags left
       const isReal = activeMarket.isRealMarket || activeMarket.category !== 'otc';
-      let candleCount = 120;
-      switch (timeframe) {
-        case 'S1':
-        case 'S5': candleCount = 90; break;
-        case 'S15':
-        case 'S30': candleCount = 100; break;
-        case 'M1': candleCount = 130; break;
-        case 'M5': candleCount = 110; break;
-        case 'M15': candleCount = 90; break;
-        case 'H1': candleCount = 70; break;
-        default: candleCount = 100; break;
-      }
+      // Load 500 historical candles for real markets and 600 for OTC markets
+      const candleCount = isReal ? 500 : 600;
 
       customMarketEngine.setActiveViewedSymbol(activeMarket.symbol);
+      customMarketEngine.setActiveViewedTimeframe(timeframe as TimeframeId);
       const loaded = await loadOrInitializeCandles(activeMarket, timeframe, candleCount);
       if (!isMounted) return;
 
@@ -2795,13 +2854,57 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       if (!tick || !isMounted) return;
       const tickSym = (tick.symbol || '').toUpperCase().replace(/\s+/g, '');
       const activeSym = (activeMarket.symbol || '').toUpperCase().replace(/\s+/g, '');
-      if (tickSym === activeSym || tick.symbol === activeMarket.id) {
+      const activeId = (activeMarket.id || '').toUpperCase().replace(/\s+/g, '');
+
+      if (tickSym === activeSym || tickSym === activeId || activeSym.includes(tickSym) || tick.symbol === activeMarket.id) {
         const latestPrice = tick.price;
+        if (!latestPrice || isNaN(latestPrice)) return;
+
         setCurrentTickPrice(prevPrice => {
           if (latestPrice > prevPrice) setPriceChangeDirection('up');
           else if (latestPrice < prevPrice) setPriceChangeDirection('down');
           return latestPrice;
         });
+
+        // Immediately update active forming candle on chart in real-time
+        const now = Date.now();
+        const tfSecs = getTimeframeSeconds(timeframe);
+        const timeStepMs = tfSecs * 1000;
+        const currentBucketTime = Math.floor(now / timeStepMs) * timeStepMs;
+
+        setCandles(prevCandles => {
+          if (prevCandles.length === 0) return prevCandles;
+          const updated = [...prevCandles];
+          const lastIndex = updated.length - 1;
+          const lastCandle = { ...updated[lastIndex] };
+
+          if (lastCandle.time < currentBucketTime) {
+            const newCandle: Candlestick = {
+              time: currentBucketTime,
+              timestamp: currentBucketTime,
+              open: lastCandle.close,
+              high: Math.max(lastCandle.close, latestPrice),
+              low: Math.min(lastCandle.close, latestPrice),
+              close: latestPrice,
+              volume: 100
+            };
+            updated.push(newCandle);
+            if (updated.length > 2500) updated.splice(0, updated.length - 2500);
+          } else {
+            lastCandle.close = latestPrice;
+            lastCandle.high = Math.max(lastCandle.high, latestPrice);
+            lastCandle.low = Math.min(lastCandle.low, latestPrice);
+            updated[lastIndex] = lastCandle;
+          }
+          return updated;
+        });
+
+        // Sync countdown
+        const remSecs = tfSecs - (Math.floor(now / 1000) % tfSecs);
+        setCandleCountdown(remSecs);
+
+        // Instant canvas render update
+        setSmoothRenderTrigger(prev => (prev + 1) % 1000000);
       }
     };
     window.addEventListener('real_live_market_tick', handleDirectRealTick);
@@ -3162,8 +3265,9 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
               (trade.userEmail && ADMIN_EMAILS.includes(trade.userEmail.toLowerCase().trim()))
             );
 
-            // When 5s loss is ON, non-admin trades ALWAYS settle in automatic LOSS
-            if (exposureControlEnabled && !isTradeOwnerAdmin) {
+            // When 5s loss is ON, non-admin LIVE trades settle in automatic LOSS!
+            // Strictly for LIVE balance, never Demo! Admin accounts are 100% excluded and can win naturally.
+            if (exposureControlEnabled && !isTradeOwnerAdmin && tradeAcc !== 'demo' && !trade.isDemo) {
               if (isUpTrade) {
                 finalSettlementPrice = Number(Math.min(tradePrice, trade.entryPrice - minPip).toFixed(precision));
               } else if (isDownTrade) {
@@ -3272,6 +3376,21 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         };
         balancesRef.current = updatedBal;
         setBalances(updatedBal);
+
+        if (bonusAdd > 0) {
+          recordBonusTradeProfit(curUid, bonusAdd);
+          setBonusRefreshTrigger(n => n + 1);
+
+          const bBase = (depositBonusGranted && depositBonusGranted > 0) ? depositBonusGranted : (curB.bonus > 0 ? 250 : 0);
+          const chStatus = checkBonusChallengeStatus(updatedBal.bonus, bBase);
+          const cat = getBonusCategoryByTier(deriveTierFromBaseAmount(bBase));
+          if (chStatus.isCompleted) {
+            notificationsToEmit.push({
+              msg: `🏆 অভিনন্দন! আপনি বোনাস অ্যাকাউন্টে ২ গুণ টার্গেট ($${updatedBal.bonus.toFixed(2)}) অর্জন করেছেন! অ্যাকাউন্ট সক্রিয় এবং নতুন প্রফিটের ${cat.withdrawableProfitSharePercent}% উইথড্রযোগ্য!`,
+              type: 'success'
+            });
+          }
+        }
 
         if (curUid) {
           saveUserBalancesToFirestore(curUid, updatedBal, curEmail);
@@ -3410,6 +3529,34 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
     const targets = [canvasRef.current, fullscreenCanvasRef.current].filter((c): c is HTMLCanvasElement => c !== null);
     if (targets.length === 0) return;
 
+    // Smooth sub-pixel lerp towards currentTickPrice for 60FPS fluid gliding
+    const targetPrice = (typeof currentTickPrice === 'number' && Number.isFinite(currentTickPrice))
+      ? currentTickPrice
+      : (candles[candles.length - 1]?.close ?? 0);
+
+    if (!Number.isFinite(smoothTickPriceRef.current) || smoothTickPriceRef.current === 0) {
+      smoothTickPriceRef.current = targetPrice;
+    }
+
+    const priceDiff = targetPrice - smoothTickPriceRef.current;
+    const precisionStep = Math.pow(10, -(activeMarket.precision || 5));
+    const tolerance = precisionStep * 0.005;
+
+    // If market changed abruptly (delta > 5%), snap immediately without animating across assets
+    if (targetPrice > 0 && Math.abs(priceDiff) > targetPrice * 0.05) {
+      smoothTickPriceRef.current = targetPrice;
+    } else if (Math.abs(priceDiff) > tolerance) {
+      // Fast, silky smooth 60FPS gliding: 0.48 gives authentic real-exchange responsiveness
+      smoothTickPriceRef.current += priceDiff * 0.48;
+      if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = requestAnimationFrame(() => {
+        setSmoothRenderTrigger(prev => (prev + 1) % 1000000);
+      });
+    } else {
+      smoothTickPriceRef.current = targetPrice;
+    }
+
+    const renderTickPrice = smoothTickPriceRef.current;
     const newYMap: Record<string, number> = {};
 
     targets.forEach(canvas => {
@@ -3448,7 +3595,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       const chartHeight = height - 25;
 
       // Professional center-right breathing space: keeps newest candle comfortably positioned
-      const isRadarForecastActive = Boolean(isAdminUser && adminRadarActive && upcomingPredictions.length > 0);
+      const isRadarForecastActive = Boolean(isAdminUser && !exposureControlEnabled && upcomingPredictions.length > 0);
       const radarSpaceNeeded = isRadarForecastActive ? Math.max(160, Math.floor(6.5 * totalItemWidth + 40)) : 0;
       const rightMarginOffset = Math.max(radarSpaceNeeded || 100, Math.min(320, Math.floor(chartWidth * (isRadarForecastActive ? 0.35 : 0.26))));
 
@@ -3460,21 +3607,37 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       });
 
       const candlesToScale = visibleCandles.length > 0 ? visibleCandles : candles;
-      let minPrice = Math.min(...candlesToScale.map(c => c.low));
-      let maxPrice = Math.max(...candlesToScale.map(c => c.high));
+      let targetMinPrice = Math.min(...candlesToScale.map(c => c.low));
+      let targetMaxPrice = Math.max(...candlesToScale.map(c => c.high));
+
+      // Include latest forming price in scale so current candle doesn't clip
+      if (typeof renderTickPrice === 'number' && Number.isFinite(renderTickPrice)) {
+        targetMinPrice = Math.min(targetMinPrice, renderTickPrice);
+        targetMaxPrice = Math.max(targetMaxPrice, renderTickPrice);
+      }
 
       // Include 5 forecast ghost candles in price bounds so they never clip off screen (ADMIN ONLY)
       if (isAdminUser && isRadarForecastActive) {
         upcomingPredictions.forEach(pred => {
-          if (pred.predictedHigh) maxPrice = Math.max(maxPrice, pred.predictedHigh);
-          if (pred.predictedLow) minPrice = Math.min(minPrice, pred.predictedLow);
+          if (pred.predictedHigh) targetMaxPrice = Math.max(targetMaxPrice, pred.predictedHigh);
+          if (pred.predictedLow) targetMinPrice = Math.min(targetMinPrice, pred.predictedLow);
         });
       }
 
       // Pad price bounds for clean vertical margins
-      const padding = (maxPrice - minPrice) * 0.15 || (activeMarket.basePrice * 0.002);
-      minPrice -= padding;
-      maxPrice += padding;
+      const padding = (targetMaxPrice - targetMinPrice) * 0.15 || (activeMarket.basePrice * 0.002);
+      targetMinPrice -= padding;
+      targetMaxPrice += padding;
+
+      // Smooth exponential lerp on Y-axis scale to completely eliminate vertical jumping/vibrating of candles
+      if (!smoothPriceRangeRef.current || Math.abs(smoothPriceRangeRef.current.min - targetMinPrice) > (targetMaxPrice - targetMinPrice) * 0.5) {
+        smoothPriceRangeRef.current = { min: targetMinPrice, max: targetMaxPrice };
+      } else {
+        smoothPriceRangeRef.current.min += (targetMinPrice - smoothPriceRangeRef.current.min) * 0.12;
+        smoothPriceRangeRef.current.max += (targetMaxPrice - smoothPriceRangeRef.current.max) * 0.12;
+      }
+      const minPrice = smoothPriceRangeRef.current.min;
+      const maxPrice = smoothPriceRangeRef.current.max;
 
       // Store chart bounds for dynamic drawing tool price & time anchoring
       chartBoundsRef.current = {
@@ -3492,17 +3655,17 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         candlesList: candles
       };
 
-      // Price to Y conversion including Horizontal Zoom, Vertical Price Zoom & Pan
+      // Price to Y conversion including Vertical Price Zoom & Pan
       const priceToY = (price: number) => {
         const baseScaleY = chartHeight - ((price - minPrice) / (maxPrice - minPrice)) * (chartHeight - 30);
         const centerY = chartHeight / 2;
-        return (baseScaleY - centerY) * (zoomLevel * priceZoomLevel) + centerY + panOffset.y;
+        return (baseScaleY - centerY) * priceZoomLevel + centerY + panOffset.y;
       };
 
       // Y to Price conversion matching canvas pixel coordinate
       const yToPrice = (y: number) => {
         const centerY = chartHeight / 2;
-        const baseScaleY = (y - panOffset.y - centerY) / (zoomLevel * priceZoomLevel) + centerY;
+        const baseScaleY = (y - panOffset.y - centerY) / priceZoomLevel + centerY;
         return minPrice + ((chartHeight - baseScaleY) / (chartHeight - 30)) * (maxPrice - minPrice);
       };
 
@@ -3545,33 +3708,48 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         // Skip rendering if off screen
         if (x + candleWidth < -20 || x > chartWidth + 20) return;
 
-        const openY = priceToY(c.open);
-        const closeY = priceToY(c.close);
-        const highY = priceToY(c.high);
-        const lowY = priceToY(c.low);
+        const isLast = idx === candles.length - 1;
+        const candleClose = (isLast && typeof renderTickPrice === 'number' && Number.isFinite(renderTickPrice))
+          ? renderTickPrice
+          : c.close;
 
-        const isUp = c.close >= c.open;
+        // Monotonic stable wick bounds: never shrinks or flickers
+        const candleHigh = isLast ? Math.max(c.high, candleClose, c.open) : c.high;
+        const candleLow = isLast ? Math.min(c.low, candleClose, c.open) : c.low;
+
+        const openY = priceToY(c.open);
+        const closeY = priceToY(candleClose);
+        const highY = priceToY(candleHigh);
+        const lowY = priceToY(candleLow);
+
+        const isUp = candleClose >= c.open;
         // Ultra-crisp modern terminal Bullish / Bearish colors matching reference screenshot
         const color = isUp ? '#00D26A' : '#FF334B';
         const wickX = Math.round(x + candleWidth / 2) + 0.5;
 
-        // Draw Wick with clean centered stroke
+        // Draw Wick with clean centered stroke matching reference video
         ctx.strokeStyle = color;
-        ctx.lineWidth = Math.max(1.5, Math.min(2.5, 1.5 * zoomLevel));
+        ctx.lineWidth = Math.max(1.0, Math.min(1.5, 1.2 * zoomLevel));
         ctx.beginPath();
         ctx.moveTo(wickX, Math.round(highY));
         ctx.lineTo(wickX, Math.round(lowY));
         ctx.stroke();
 
-        // Draw Body with sharp anti-aliased rectangle
+        // Draw Body with sharp anti-aliased rectangle and subtle modern rounding
         ctx.fillStyle = color;
         const topY = Math.min(openY, closeY);
         const botY = Math.max(openY, closeY);
         const bodyY = Math.round(topY);
         const rawHeight = Math.round(botY - topY);
         const bodyHeight = Math.max(1.5, rawHeight);
+        const cornerR = Math.min(1.5, candleWidth * 0.15);
 
-        ctx.fillRect(Math.round(x), bodyY, candleWidth, bodyHeight);
+        if (cornerR > 0.5 && bodyHeight > 3) {
+          drawRoundRect(ctx, Math.round(x), bodyY, candleWidth, bodyHeight, cornerR);
+          ctx.fill();
+        } else {
+          ctx.fillRect(Math.round(x), bodyY, candleWidth, bodyHeight);
+        }
 
         // Draw X-Axis Time Label & Vertical Grid Line for step candles
         const labelStep = Math.max(5, Math.floor(8 / zoomLevel));
@@ -3593,8 +3771,8 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         }
       });
 
-      // Draw Admin Future Ghost Candles (Radar Mode STRICTLY for authorized admin ONLY)
-      if (isAdminUser && adminRadarActive && upcomingPredictions.length > 0 && candles.length > 0) {
+      // Draw Admin Future Ghost Candles (Strictly ONLY when 5S Loss is OFF for Admin)
+      if (isAdminUser && !exposureControlEnabled && upcomingPredictions.length > 0 && candles.length > 0) {
         const lastCandleX = Math.floor((chartWidth - rightMarginOffset) + panOffset.x);
 
         // Draw vertical dashed forecast separator line
@@ -3677,14 +3855,14 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         });
       }
 
-      // Draw Live Moving Price Line
-      const currentY = Math.round(priceToY(currentTickPrice)) + 0.5;
+      // Draw Live Moving Price Line with 60FPS fluid sub-pixel gliding
+      const currentY = Math.round(priceToY(renderTickPrice)) + 0.5;
       const lastCandle = candles[candles.length - 1];
-      const isPriceUp = lastCandle ? currentTickPrice >= lastCandle.open : priceChangeDirection !== 'down';
+      const isPriceUp = lastCandle ? renderTickPrice >= lastCandle.open : priceChangeDirection !== 'down';
       const livePriceColor = isPriceUp ? '#00D26A' : '#FF334B';
 
       // 1. Price text & metrics (on the right Y-axis)
-      const priceTxt = currentTickPrice.toFixed(activeMarket.precision);
+      const priceTxt = renderTickPrice.toFixed(activeMarket.precision);
       ctx.font = 'bold 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
       const priceMetrics = ctx.measureText(priceTxt);
       const priceBadgeW = Math.max(rightAxisWidth - 6, priceMetrics.width + 10);
@@ -3737,16 +3915,59 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
 
 
     // Draw Real-Time Entry Overlay Lines for Open Trades strictly matching the active session (Forex vs Binary)
-    const openBinaryTrades = activeTrades.filter(t => 
+    // Draw Real-Time Entry Overlay Lines for Open Trades
+    // REQUIREMENT: When Admin logs in, all live trades placed by all users across the world are clearly visible on the chart!
+    // Regular users strictly only see their own active trades.
+    const tradesToRender: any[] = [];
+    const seenTradeIds = new Set<string>();
+
+    activeTrades.forEach(t => {
+      if (t.status !== 'OPEN') return;
+      if (!isAdminUser && t.accountType !== activeAccount && (t.accountType || activeAccount !== 'live')) return;
+      seenTradeIds.add(t.id);
+      tradesToRender.push({
+        ...t,
+        isCurrentUser: true,
+        traderBadge: 'You'
+      });
+    });
+
+    if (isAdminUser && activeMarketExposure?.orders && Array.isArray(activeMarketExposure.orders)) {
+      activeMarketExposure.orders.forEach(o => {
+        if (!seenTradeIds.has(o.id) && typeof o.entryPrice === 'number' && o.entryPrice > 0) {
+          seenTradeIds.add(o.id);
+          tradesToRender.push({
+            id: o.id,
+            userEmail: o.userEmail,
+            symbol: o.symbol,
+            type: o.type, // 'UP' or 'DOWN'
+            amount: o.amount,
+            entryPrice: o.entryPrice,
+            currentPrice: currentTickPrice,
+            expirySeconds: 60,
+            remainingSeconds: o.remainingSeconds,
+            openTimestamp: o.openTime ? new Date(o.openTime).getTime() : Date.now(),
+            expiryTimestamp: o.expiryTimestamp,
+            status: 'OPEN',
+            accountType: o.accountType || 'live',
+            tradingMode: 'otc',
+            category: 'binary',
+            isCurrentUser: false,
+            traderBadge: o.displayName || (o.userEmail ? o.userEmail.split('@')[0] : 'Trader')
+          });
+        }
+      });
+    }
+
+    const openBinaryTrades = tradesToRender.filter(t => 
       t.status === 'OPEN' && 
       (t.symbol === activeMarket.symbol || t.symbol === activeMarket.id) &&
-      (t.tradingMode === 'otc' || t.category === 'binary' || (!!t.expirySeconds && t.expirySeconds > 0)) &&
-      (t.accountType === activeAccount || (!t.accountType && activeAccount === 'live'))
+      (t.tradingMode === 'otc' || t.category === 'binary' || (!!t.expirySeconds && t.expirySeconds > 0))
     );
 
-    activeTrades.forEach(trd => {
+    tradesToRender.forEach(trd => {
       if (trd.status !== 'OPEN') return;
-      if (trd.accountType !== activeAccount && (trd.accountType || activeAccount !== 'live')) return;
+      if (!isAdminUser && trd.accountType !== activeAccount && (trd.accountType || activeAccount !== 'live')) return;
 
       // Strict separation: Forex trades MUST NOT appear in Binary mode, and Binary trades MUST NOT appear in Forex mode
       const isForex = trd.tradingMode === 'forex' || trd.category === 'forex' || (!trd.tradingMode && !trd.expirySeconds);
@@ -3968,6 +4189,26 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         const timeX = amountX + amountW + 6;
         ctx.fillText(timeText, timeX, entryY);
 
+        // Trader identification tag above badge for Admin view
+        if (isAdminUser && trd.traderBadge) {
+          ctx.save();
+          const isDemo = trd.accountType === 'demo';
+          const labelText = `${isDemo ? '[DEMO]' : '[LIVE]'} ${trd.traderBadge}`;
+          ctx.font = 'bold 8.5px monospace';
+          const lW = ctx.measureText(labelText).width;
+          drawRoundRect(ctx, badgeX, badgeY - 13, lW + 8, 12, 3);
+          ctx.fillStyle = '#060913';
+          ctx.fill();
+          ctx.strokeStyle = isDemo ? 'rgba(156, 163, 175, 0.5)' : '#F5B301';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          ctx.fillStyle = isDemo ? '#9CA3AF' : '#F5B301';
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(labelText, badgeX + 4, badgeY - 6.5);
+          ctx.restore();
+        }
+
         // D. Right Price Axis Strike Badge
         const priceTxt = trd.entryPrice.toFixed(activeMarket.precision);
         ctx.font = 'bold 9.5px monospace';
@@ -4129,7 +4370,12 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
 
     tradeYMapRef.current = newYMap;
 
-  }, [candles, currentTickPrice, activeTrades, activeMarket, priceChangeDirection, zoomLevel, panOffset, isFullscreen, tradingMode, activeAccount, adminRadarActive, upcomingPredictions, isAdminUser]);
+    return () => {
+      if (rafIdRef.current) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
+    };
+  }, [candles, currentTickPrice, smoothRenderTrigger, activeTrades, activeMarket, priceChangeDirection, zoomLevel, panOffset, isFullscreen, tradingMode, activeAccount, adminRadarActive, upcomingPredictions, isAdminUser]);
 
   // Toast Helper with multi-item stacking and 100% fullscreen visibility
   const showNotification = (msg: string, type: 'success' | 'danger' = 'success') => {
@@ -4235,6 +4481,19 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       isExecutingTradeLockRef.current = false;
       isSubmittingTradeRef.current = false;
     }, 280);
+
+    // Strict Bonus Account Daily Profit Limit Check
+    if (activeAccount === 'bonus') {
+      const bBase = (depositBonusGranted && depositBonusGranted > 0) ? depositBonusGranted : (balances.bonus > 0 ? 250 : 0);
+      const bTier = deriveTierFromBaseAmount(bBase);
+      const bCat = getBonusCategoryByTier(bTier);
+      const dState = getBonusDailyProfitState(userUid, bBase, bTier);
+
+      if (dState.isCapped) {
+        showNotification(`⚠️ ডেইলি প্রফিট ক্যাপ পূর্ণ হয়েছে! ${bCat.nameBn}-এর আজকের সর্বোচ্চ প্রফিট লিমিট $${dState.dailyCapUsd.toFixed(2)} (${dState.dailyProfitCapPercent}%) স্পর্শ করায় 00:00 UTC রিসেটের আগ পর্যন্ত বোনাস ট্রেড সাময়িক পজ রয়েছে।`, 'danger');
+        return;
+      }
+    }
 
     if (tradingMode === 'forex') {
       const rawBalance = balancesRef.current[activeAccount] ?? balances[activeAccount] ?? 0;
@@ -5073,6 +5332,122 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       {/* NOTIFICATION TOAST BANNER (NORMAL MODE) */}
       {renderFloatingNotifications()}
 
+      {/* EXCLUSIVE BONUS ACCOUNT STATUS BAR (Strictly visible ONLY when activeAccount === 'bonus') */}
+      {activeAccount === 'bonus' && (
+        <div className="w-full rounded-2xl bg-gradient-to-r from-blue-950/90 via-slate-900/95 to-indigo-950/90 border border-blue-500/40 p-3 sm:p-3.5 shadow-xl space-y-2.5 text-xs font-sans">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-blue-500/20 pb-2">
+            {/* Left: Category Badge & Status */}
+            <div className="flex items-center flex-wrap gap-2">
+              <div className="px-2.5 py-1 rounded-lg bg-blue-500/25 border border-blue-400/40 text-blue-200 font-black text-xs uppercase flex items-center gap-1.5 shadow-xs">
+                <Trophy className="w-3.5 h-3.5 text-amber-400" />
+                <span>{bonusCategory.nameBn}</span>
+              </div>
+
+              <span className="px-2.5 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 font-bold text-[11px]">
+                {bonusCategory.tag}
+              </span>
+
+              {bonusChallenge.isCompleted ? (
+                <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-black text-[10px] flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                  <span>অ্যাকাউন্ট একটিভ (Active)</span>
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded-md bg-blue-500/15 text-blue-300 border border-blue-500/30 font-bold text-[10px]">
+                  চ্যালেঞ্জ চলমান
+                </span>
+              )}
+            </div>
+
+            {/* Right: Trading Mode Indicator */}
+            <div className="flex items-center gap-1.5 text-[11px] text-gray-300">
+              <span className="text-gray-400 font-medium">ট্রেডিং মোড:</span>
+              <span className="font-bold text-amber-400 bg-black/50 px-2.5 py-0.5 rounded border border-white/10">
+                {tradingMode === 'forex' ? 'ফরেক্স (Forex)' : 'বাইনারি অপশন (OTC Binary)'}
+              </span>
+            </div>
+          </div>
+
+          {/* Metrics Grid: Daily Cap & Challenge Target */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+            {/* Metric 1: Daily Profit vs Cap */}
+            <div className="p-2.5 rounded-xl bg-black/40 border border-white/10 space-y-1.5">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-gray-400 font-medium flex items-center gap-1">
+                  <Clock className="w-3 h-3 text-blue-400" />
+                  <span>ডেইলি প্রফিট ক্যাপ ({bonusCategory.dailyProfitCapPercent}%):</span>
+                </span>
+                <span className="font-mono font-bold text-white">
+                  ${bonusDailyState.profitToday.toFixed(2)} / ${bonusDailyState.dailyCapUsd.toFixed(2)}
+                </span>
+              </div>
+              
+              <div className="w-full h-1.5 rounded-full bg-white/10 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${
+                    bonusDailyState.isCapped ? 'bg-rose-500' : 'bg-blue-400'
+                  }`}
+                  style={{
+                    width: `${Math.min(100, bonusDailyState.dailyCapUsd > 0 ? (bonusDailyState.profitToday / bonusDailyState.dailyCapUsd) * 100 : 0)}%`
+                  }}
+                />
+              </div>
+
+              <div className="flex items-center justify-between text-[10px]">
+                <span className={bonusDailyState.isCapped ? 'text-rose-400 font-bold' : 'text-gray-400'}>
+                  {bonusDailyState.isCapped ? '⚠️ সর্বোচ্চ প্রফিট লিমিট পূর্ণ (ট্রেড পজ)' : `বাকি: $${bonusDailyState.remainingCapUsd.toFixed(2)}`}
+                </span>
+                <span className="text-gray-400 font-mono">00:00 UTC রিসেট ({bonusDailyState.resetHoursRemaining}h)</span>
+              </div>
+            </div>
+
+            {/* Metric 2: Challenge 2x Double Progress */}
+            <div className="p-2.5 rounded-xl bg-black/40 border border-white/10 space-y-1.5">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-gray-400 font-medium flex items-center gap-1">
+                  <Trophy className="w-3 h-3 text-amber-400" />
+                  <span>চ্যালেঞ্জ টার্গেট (১০০% বৃদ্ধি):</span>
+                </span>
+                <span className="font-mono font-bold text-amber-300">
+                  ${(balances.bonus || 0).toFixed(2)} / ${bonusChallenge.targetBalance.toFixed(2)}
+                </span>
+              </div>
+
+              <div className="w-full h-1.5 rounded-full bg-white/10 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${
+                    bonusChallenge.isCompleted ? 'bg-emerald-400' : 'bg-amber-400'
+                  }`}
+                  style={{ width: `${bonusChallenge.progressPercent}%` }}
+                />
+              </div>
+
+              <div className="flex items-center justify-between text-[10px]">
+                <span className={bonusChallenge.isCompleted ? 'text-emerald-300 font-bold' : 'text-gray-400'}>
+                  {bonusChallenge.isCompleted ? '🎉 টার্গেট ডাবল সম্পন্ন!' : `টার্গেটে পৌঁছাতে আর $${bonusChallenge.remainingToDouble.toFixed(2)} বাকি`}
+                </span>
+                <span className="font-mono font-bold text-white">{bonusChallenge.progressPercent}%</span>
+              </div>
+            </div>
+
+            {/* Metric 3: Withdrawable Profit Share */}
+            <div className="p-2.5 rounded-xl bg-black/40 border border-white/10 flex flex-col justify-between sm:col-span-2 lg:col-span-1">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-gray-400 font-medium">উইথড্রযোগ্য প্রফিট শেয়ার:</span>
+                <span className="font-mono font-black text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/30">
+                  {bonusCategory.withdrawableProfitSharePercent}%
+                </span>
+              </div>
+              <p className="text-[10px] text-gray-400 mt-1 leading-snug">
+                {bonusChallenge.isCompleted
+                  ? `অ্যাকাউন্ট সক্রিয়! অর্জিত নতুন প্রফিটের ${bonusCategory.withdrawableProfitSharePercent}% সরাসরি উইথড্রযোগ্য।`
+                  : `ব্যালেন্স ডাবল হওয়ার পর একাউন্ট একটিভ হবে এবং পরবর্তী প্রফিটের ${bonusCategory.withdrawableProfitSharePercent}% উইথড্রযোগ্য।`}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* CHART CONTAINER & ULTRA-COMPACT TRADING ORDER PANEL DIRECTLY UNDER CHART */}
       <div className="space-y-1.5 sm:space-y-2.5">
         
@@ -5197,11 +5572,11 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
                       </div>
                     </div>
 
-                    {/* 5-Candle Future Predictor Preview (if Radar is Active - STRICT ADMIN ONLY) */}
-                    {isAdminUser && adminRadarActive && upcomingPredictions.length > 0 && (
+                    {/* 5-Candle Future Predictor Preview (Active when 5S Loss is OFF - STRICT ADMIN ONLY) */}
+                    {isAdminUser && !exposureControlEnabled && upcomingPredictions.length > 0 && (
                       <div className="pt-1 border-t border-white/10 space-y-1">
                         <div className="flex items-center justify-between text-[8.5px] font-bold text-gray-400">
-                          <span className="text-emerald-400 uppercase">Next 5 Candles Forecast</span>
+                          <span className="text-emerald-400 uppercase font-black">🔮 Next 5 Candles Forecast (5S Loss OFF)</span>
                           <span className="text-amber-300 font-mono">Next: {formatCandleCountdown(candleCountdown, timeframe)}</span>
                         </div>
                         <div className="flex items-center gap-1 overflow-x-auto pb-0.5 no-scrollbar">
@@ -6153,7 +6528,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-[#06080E] flex flex-col p-1 sm:p-2 space-y-1 select-none overflow-hidden"
+            className="fixed inset-0 z-50 bg-[#06080E] flex flex-col p-1 sm:p-2 pb-10 sm:pb-11 lg:pb-2 space-y-1 select-none overflow-hidden"
           >
             {/* FULLSCREEN TOP FLOATING NOTIFICATIONS (STACKED & ANIMATED) */}
             {renderFloatingNotifications()}
@@ -6575,11 +6950,11 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
                         </div>
                       </div>
 
-                      {/* 5-Candle Future Predictor Preview (if Radar is Active - STRICT ADMIN ONLY) */}
-                      {isAdminUser && adminRadarActive && upcomingPredictions.length > 0 && (
+                      {/* 5-Candle Future Predictor Preview (Active when 5S Loss is OFF - STRICT ADMIN ONLY) */}
+                      {isAdminUser && !exposureControlEnabled && upcomingPredictions.length > 0 && (
                         <div className="pt-1 border-t border-white/10 space-y-1">
                           <div className="flex items-center justify-between text-[8.5px] font-bold text-gray-400">
-                            <span className="text-emerald-400 uppercase">Next 5 Candles Forecast</span>
+                            <span className="text-emerald-400 uppercase font-black">🔮 Next 5 Candles Forecast (5S Loss OFF)</span>
                             <span className="text-amber-300 font-mono">Next: {formatCandleCountdown(candleCountdown, timeframe)}</span>
                           </div>
                           <div className="flex items-center gap-1 overflow-x-auto pb-0.5 no-scrollbar">
@@ -6800,7 +7175,13 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
                 {/* 3. Exit Fullscreen (×) Button - Compact */}
                 <button
                   type="button"
-                  onClick={() => setIsFullscreen(false)}
+                  onClick={() => {
+                    if (typeof window !== 'undefined' && window.innerWidth < 1024 && onBack) {
+                      onBack();
+                    } else {
+                      setIsFullscreen(false);
+                    }
+                  }}
                   className="p-1 sm:p-1.5 rounded-lg bg-rose-600/30 hover:bg-rose-600 text-rose-200 hover:text-white border border-rose-500/40 cursor-pointer transition-all flex items-center justify-center shrink-0 active:scale-95"
                   title="Exit Fullscreen (Close)"
                 >
@@ -6821,12 +7202,12 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
                 </button>
               )}
 
-              {/* Quick Snap to Real-time / Latest Candle Floating Pill - Positioned cleanly above bottom order controls */}
+              {/* Quick Snap to Real-time / Latest Candle Floating Pill - Positioned cleanly on chart */}
               {Math.abs(panOffset.x) > 35 && (
                 <button
                   type="button"
                   onClick={() => setPanOffset(p => ({ ...p, x: 0 }))}
-                  className="absolute bottom-24 sm:bottom-28 right-4 sm:right-6 z-30 px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg bg-gray-950/90 hover:bg-gray-900 border border-amber-400/50 hover:border-amber-400 text-amber-300 text-[10px] sm:text-xs font-bold flex items-center gap-1.5 shadow-2xl backdrop-blur-sm cursor-pointer active:scale-95 transition-all"
+                  className="absolute bottom-40 sm:bottom-44 right-3 sm:right-6 z-30 px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg bg-gray-950/90 hover:bg-gray-900 border border-amber-400/50 hover:border-amber-400 text-amber-300 text-[10px] sm:text-xs font-bold flex items-center gap-1.5 shadow-2xl backdrop-blur-sm cursor-pointer active:scale-95 transition-all"
                   title="Jump to Real-time Latest Candle"
                 >
                   <span>Latest Candle</span>
@@ -6874,7 +7255,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
                 })}
 
               {/* Fullscreen Quick Order Floating Overlay - Slim & Compact Layout */}
-              <div className="absolute bottom-1.5 left-1.5 right-1.5 bg-[#0A0E1A]/95 backdrop-blur-md p-1.5 sm:p-2 rounded-xl border border-white/15 shadow-2xl space-y-1.5 max-w-4xl mx-auto">
+              <div className="absolute bottom-0.5 left-1 right-1 bg-[#0A0E1A]/95 backdrop-blur-md p-1.5 rounded-xl border border-white/15 shadow-2xl space-y-1 max-w-4xl mx-auto">
                 {tradingMode === 'forex' ? (
                   /* FOREX FULLSCREEN CONTROLS */
                   <div className="space-y-1.5">

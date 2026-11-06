@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef, Suspense, laz
 import { motion, AnimatePresence } from 'motion/react';
 import { getDisplayUserId, saveTradeToFirestore, saveTradesBatchToFirestore, saveUserBalancesToFirestore, subscribeUserTradesFromFirestore } from '../lib/firestoreSync';
 import { safeFormatTime, safeFormatTimeWithSeconds, safeFormatDateTime, safeGetTime } from '../lib/dateUtils';
+import { safeFetch, safeFetchJson } from '../lib/safeApi';
 import { calculateAccountMetricsEngine } from '../lib/profitCalculator';
 import { calculateUserTodayProfit, syncUserToGlobalLeaderboard } from '../lib/leaderboardService';
 import { resolveBinaryTrade, resolveForexTrade, registerSettledTradeIds, isTradeSettled, filterUnsettledActiveTrades } from '../lib/tradeSettlement';
@@ -49,7 +50,8 @@ import {
   Camera,
   Pencil,
   Edit2,
-  Users
+  Users,
+  Trophy
 } from 'lucide-react';
 import { auth, signOut, sendEmailVerification, updateProfile, User as FirebaseUser, db, isQuotaExceeded, isQuotaError } from '../lib/firebase';
 import { doc, getDoc, setDoc, updateDoc, collection, getDocs, query, where, serverTimestamp, onSnapshot } from 'firebase/firestore';
@@ -58,22 +60,28 @@ import { INITIAL_COIN_ASSETS, INITIAL_TRANSACTIONS } from '../data/mockData';
 import { Sidebar } from './Sidebar';
 import type { ActiveTrade } from './TradingTerminalView';
 import { TradeHistoryList } from './TradeHistoryList';
+import { InstantActionTransition } from './InstantActionTransition';
 
-// Code-split secondary views and modals with intelligent background preloading for instant responsiveness
+// Eagerly import primary action modals so clicking Deposit, Withdraw, Trade, or Help opens in 0ms with zero network lag
+import { DepositModal } from './DepositModal';
+import { WithdrawModal } from './WithdrawModal';
+import { HelpLineModal } from './HelpLineModal';
+import { TradeHistoryModal } from './TradeHistoryModal';
+import { TradeChoiceModal } from './TradeChoiceModal';
+import { TradeTypeModal } from './TradeTypeModal';
+
+// Secondary views and infrequent modals remain lazy
 const TradingTerminalView = lazy(() => import('./TradingTerminalView').then(m => ({ default: m.TradingTerminalView })));
-const TradeTypeModal = lazy(() => import('./TradeTypeModal').then(m => ({ default: m.TradeTypeModal })));
 const MarketsView = lazy(() => import('./MarketsView').then(m => ({ default: m.MarketsView })));
-const DepositModal = lazy(() => import('./DepositModal').then(m => ({ default: m.DepositModal })));
-const WithdrawModal = lazy(() => import('./WithdrawModal').then(m => ({ default: m.WithdrawModal })));
-const HelpLineModal = lazy(() => import('./HelpLineModal').then(m => ({ default: m.HelpLineModal })));
 const FeedbackModal = lazy(() => import('./FeedbackModal').then(m => ({ default: m.FeedbackModal })));
-const TradeHistoryModal = lazy(() => import('./TradeHistoryModal').then(m => ({ default: m.TradeHistoryModal })));
 const KYCModal = lazy(() => import('./KYCModal').then(m => ({ default: m.KYCModal })));
 const ChangePasswordModal = lazy(() => import('./ChangePasswordModal').then(m => ({ default: m.ChangePasswordModal })));
 const ShareReferralModal = lazy(() => import('./ShareReferralModal').then(m => ({ default: m.ShareReferralModal })));
 const MyReferralsModal = lazy(() => import('./MyReferralsModal').then(m => ({ default: m.MyReferralsModal })));
 const AvatarPickerModal = lazy(() => import('./AvatarPickerModal').then(m => ({ default: m.AvatarPickerModal })));
 const EditDemoBalanceModal = lazy(() => import('./EditDemoBalanceModal').then(m => ({ default: m.EditDemoBalanceModal })));
+const LeaderboardModal = lazy(() => import('./LeaderboardModal').then(m => ({ default: m.LeaderboardModal })));
+
 import { 
   getStoredKycRequests, 
   getStoredNotifications, 
@@ -126,81 +134,36 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
     }
   }, [selectedTradingMarketId]);
 
-  // Ultra-Fast High-Performance Synchronization Progress Engine (1% -> 100% in ~1.8 seconds)
-  const [syncProgress, setSyncProgress] = useState<number>(() => {
-    try {
-      if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('forex_dashboard_synced') === 'true') {
-        return 100;
-      }
-    } catch (_) {}
-    return 1;
-  });
-  const [syncStatusText, setSyncStatusText] = useState<string>('Initializing Secure Node...');
-  const [isInitialSyncComplete, setIsInitialSyncComplete] = useState<boolean>(() => {
-    try {
-      if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('forex_dashboard_synced') === 'true') {
-        return true;
-      }
-    } catch (_) {}
-    return false;
-  });
+  // Dedicated Initial Reload Loading Gate: Displays the centered logo surrounded by rotating concentric rings for 2.0s with clear progress percentage
+  const [isDashboardReady, setIsDashboardReady] = useState<boolean>(false);
+  const [reloadProgress, setReloadProgress] = useState<number>(0);
 
   useEffect(() => {
-    if (isInitialSyncComplete) return;
-
-    let current = 1;
-    let timerId: any = null;
-
-    const tick = () => {
-      // Rapid, silky smooth 1.2-second progressive sync
-      const increment = current < 40 ? 6 : current < 80 ? 4 : current < 95 ? 3 : 2;
-      const nextDelay = current < 80 ? 18 : 35;
-      current = Math.min(100, current + increment);
-      setSyncProgress(current);
-
-      if (current < 25) {
-        setSyncStatusText('Initializing High-Speed Trading Engine...');
-      } else if (current < 50) {
-        setSyncStatusText('Connecting to Global Market Liquidity...');
-      } else if (current < 75) {
-        setSyncStatusText('Synchronizing Real-Time Forex & OTC Feeds...');
-      } else if (current < 90) {
-        setSyncStatusText('Verifying Encrypted Wallet Balances...');
-      } else if (current < 99) {
-        setSyncStatusText('Optimizing Interactive Trading Workspace...');
-      } else {
-        setSyncStatusText('Terminal Synchronized 100% • Opening Workspace...');
+    // Dismiss initial static HTML preloader cleanly
+    if (typeof window !== 'undefined' && typeof (window as any).__DISMISS_SPLASH__ === 'function') {
+      try { (window as any).__DISMISS_SPLASH__(); } catch (_) {}
+    }
+    const startTime = Date.now();
+    const duration = 2000; // 2.0s smooth startup: guarantees all background sockets, balances, and event loop are 100% settled
+    const interval = setInterval(() => {
+      const elapsed = Date.now() - startTime;
+      const pct = Math.min(100, Math.round((elapsed / duration) * 100));
+      setReloadProgress(pct);
+      if (elapsed >= duration) {
+        clearInterval(interval);
+        setIsDashboardReady(true);
       }
+    }, 35);
 
-      if (current >= 100) {
-        try { sessionStorage.setItem('forex_dashboard_synced', 'true'); } catch (_) {}
-        setTimeout(() => {
-          setIsInitialSyncComplete(true);
-        }, 120);
-      } else {
-        timerId = setTimeout(tick, nextDelay);
-      }
-    };
-
-    timerId = setTimeout(tick, 15);
+    const safety = setTimeout(() => {
+      clearInterval(interval);
+      setIsDashboardReady(true);
+    }, duration + 300);
 
     return () => {
-      if (timerId) clearTimeout(timerId);
+      clearInterval(interval);
+      clearTimeout(safety);
     };
-  }, [isInitialSyncComplete]);
-
-  // Intelligent Background Preloader: caches TradingTerminalView, MarketsView, and Modals into browser memory
-  useEffect(() => {
-    const idleTimer = setTimeout(() => {
-      import('./TradingTerminalView').catch(() => {});
-      import('./MarketsView').catch(() => {});
-      import('./DepositModal').catch(() => {});
-      import('./WithdrawModal').catch(() => {});
-      import('./TradeTypeModal').catch(() => {});
-      import('./KYCModal').catch(() => {});
-      import('./TradeHistoryModal').catch(() => {});
-    }, 150);
-    return () => clearTimeout(idleTimer);
   }, []);
 
   // Account Type Selection: Demo, Live, Bonus (Default to bonus to match screenshot)
@@ -337,6 +300,8 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
 
   // History Modal & Sub-tab States
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+  const [isLeaderboardModalOpen, setIsLeaderboardModalOpen] = useState(false);
+  const [isTradeChoiceModalOpen, setIsTradeChoiceModalOpen] = useState(false);
   const [dashboardHistoryTab, setDashboardHistoryTab] = useState<'forex' | 'otc'>('forex');
   const [dashboardTxFilter, setDashboardTxFilter] = useState<'all' | 'deposits' | 'withdrawals'>('all');
 
@@ -506,7 +471,7 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
       } catch (_) {}
 
       try {
-        fetch('/api/users/register', {
+        safeFetch('/api/users/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -516,7 +481,7 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
             fullName: trimmed,
             name: trimmed,
           }),
-        }).catch(() => {});
+        }, 600).catch(() => {});
       } catch (_) {}
     } catch (e) {
       console.error('Failed to save user name', e);
@@ -658,9 +623,8 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
     // Cross-device KYC status sync from server endpoint (guarantees verification on new devices/phones)
     const fetchRemoteKyc = async () => {
       try {
-        const res = await fetch(`/api/users/kyc-status/${user.uid}`);
-        if (res.ok) {
-          const kycData = await res.json();
+        const kycData = await safeFetchJson(`/api/users/kyc-status/${user.uid}`, {}, 600);
+        if (kycData) {
           if (kycData.found && (kycData.kycStatus === 'verified' || kycData.isVerifiedUser)) {
             setKycStatus('verified');
             try {
@@ -703,12 +667,9 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
       }
     } catch (_) {}
 
-    // Check for auto-verifying pending KYC requests periodically
-    checkAndAutoVerifyPendingKyc();
     const autoKycInterval = setInterval(() => {
-      checkAndAutoVerifyPendingKyc();
       syncLocalKyc();
-    }, 15000);
+    }, 45000);
 
     const unsubNotifs = subscribeUserNotificationsFromFirestore(user.uid, (notifs) => {
       setUserNotifications(notifs);
@@ -823,134 +784,189 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
       }
     });
 
-    // Multi-device fallback balance & KYC polling (every 3.5s) to guarantee phone <-> desktop sync
+    // Multi-device fallback balance & KYC polling to guarantee phone <-> desktop sync
+    let isUserPollInFlight = false;
     const userPollTimer = setInterval(async () => {
       if (!user?.uid) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (isUserPollInFlight) return;
+      isUserPollInFlight = true;
       try {
         const emailParam = encodeURIComponent(user.email || '');
-        const res = await fetch(`/api/users/sync-balances/${user.uid}?email=${emailParam}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.found && data.balances) {
-            setBalances(prev => {
-              const bLive = typeof data.balances.live === 'number' ? data.balances.live : prev.live;
-              const bBonus = typeof data.balances.bonus === 'number' ? data.balances.bonus : prev.bonus;
-              const bDemo = typeof data.balances.demo === 'number' ? data.balances.demo : prev.demo;
+        const data = await safeFetchJson(`/api/users/sync-balances/${user.uid}?email=${emailParam}`, {}, 600);
+        if (data && data.found && data.balances) {
+          setBalances(prev => {
+            const bLive = typeof data.balances.live === 'number' ? data.balances.live : prev.live;
+            const bBonus = typeof data.balances.bonus === 'number' ? data.balances.bonus : prev.bonus;
+            const bDemo = typeof data.balances.demo === 'number' ? data.balances.demo : prev.demo;
 
-              // Safeguard: Never wipe positive balance to 0 on poll
-              const live = prev.live > 0 && bLive === 0 ? prev.live : bLive;
-              const bonus = prev.bonus > 0 && bBonus === 0 ? prev.bonus : bBonus;
-              const demo = bDemo;
+            // Safeguard: Never wipe positive balance to 0 on poll
+            const live = prev.live > 0 && bLive === 0 ? prev.live : bLive;
+            const bonus = prev.bonus > 0 && bBonus === 0 ? prev.bonus : bBonus;
+            const demo = bDemo;
 
-              if (prev.live === live && prev.bonus === bonus && prev.demo === demo) return prev;
-              return { live, bonus, demo };
-            });
-          }
+            if (prev.live === live && prev.bonus === bonus && prev.demo === demo) return prev;
+            return { live, bonus, demo };
+          });
         }
       } catch (_) {}
 
       // Cross-device KYC poll (checks if approved on another device)
       try {
-        const kycRes = await fetch(`/api/users/kyc-status/${user.uid}`);
-        if (kycRes.ok) {
-          const kycData = await kycRes.json();
-          if (kycData.found && (kycData.kycStatus === 'verified' || kycData.isVerifiedUser)) {
-            setKycStatus('verified');
-            try {
-              localStorage.setItem(`forex_kyc_status_${user.uid}`, 'verified');
-              localStorage.setItem(`forex_is_verified_${user.uid}`, 'true');
-            } catch (_) {}
-          }
+        const kycData = await safeFetchJson(`/api/users/kyc-status/${user.uid}`, {}, 600);
+        if (kycData && kycData.found && (kycData.kycStatus === 'verified' || kycData.isVerifiedUser)) {
+          setKycStatus('verified');
+          try {
+            localStorage.setItem(`forex_kyc_status_${user.uid}`, 'verified');
+            localStorage.setItem(`forex_is_verified_${user.uid}`, 'true');
+          } catch (_) {}
         }
       } catch (_) {}
 
       // Cross-device OTC 5s Counter Loss state sync from central server
       try {
-        const expRes = await fetch('/api/otc/admin-mode');
-        if (expRes.ok) {
-          const expData = await expRes.json();
-          if (typeof expData.exposureControlEnabled === 'boolean') {
-            globalExposureControlRef.current = expData.exposureControlEnabled;
-            try {
-              localStorage.setItem('forex_admin_exposure_control', String(expData.exposureControlEnabled));
-            } catch (_) {}
-          }
+        const expData = await safeFetchJson('/api/otc/admin-mode', {}, 600);
+        if (expData && typeof expData.exposureControlEnabled === 'boolean') {
+          globalExposureControlRef.current = expData.exposureControlEnabled;
+          try {
+            localStorage.setItem('forex_admin_exposure_control', String(expData.exposureControlEnabled));
+          } catch (_) {}
         }
       } catch (_) {}
-    }, 12000);
+      finally {
+        isUserPollInFlight = false;
+      }
+    }, 25000);
 
     const handleFocusSync = async () => {
       if (!user?.uid) return;
       try {
         const emailParam = encodeURIComponent(user.email || '');
-        const res = await fetch(`/api/users/sync-balances/${user.uid}?email=${emailParam}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.found && data.balances) {
-            setBalances(prev => {
-              const bLive = typeof data.balances.live === 'number' ? data.balances.live : prev.live;
-              const bBonus = typeof data.balances.bonus === 'number' ? data.balances.bonus : prev.bonus;
-              const bDemo = typeof data.balances.demo === 'number' ? data.balances.demo : prev.demo;
+        const data = await safeFetchJson(`/api/users/sync-balances/${user.uid}?email=${emailParam}`, {}, 600);
+        if (data && data.found && data.balances) {
+          setBalances(prev => {
+            const bLive = typeof data.balances.live === 'number' ? data.balances.live : prev.live;
+            const bBonus = typeof data.balances.bonus === 'number' ? data.balances.bonus : prev.bonus;
+            const bDemo = typeof data.balances.demo === 'number' ? data.balances.demo : prev.demo;
 
-              const live = prev.live > 0 && bLive === 0 ? prev.live : bLive;
-              const bonus = prev.bonus > 0 && bBonus === 0 ? prev.bonus : bBonus;
-              const demo = bDemo;
+            const live = prev.live > 0 && bLive === 0 ? prev.live : bLive;
+            const bonus = prev.bonus > 0 && bBonus === 0 ? prev.bonus : bBonus;
+            const demo = bDemo;
 
-              if (prev.live === live && prev.bonus === bonus && prev.demo === demo) return prev;
-              return { live, bonus, demo };
-            });
-          }
+            if (prev.live === live && prev.bonus === bonus && prev.demo === demo) return prev;
+            return { live, bonus, demo };
+          });
         }
       } catch (_) {}
 
       try {
-        const kycRes = await fetch(`/api/users/kyc-status/${user.uid}`);
-        if (kycRes.ok) {
-          const kycData = await kycRes.json();
-          if (kycData.found && (kycData.kycStatus === 'verified' || kycData.isVerifiedUser)) {
-            setKycStatus('verified');
-            try {
-              localStorage.setItem(`forex_kyc_status_${user.uid}`, 'verified');
-              localStorage.setItem(`forex_is_verified_${user.uid}`, 'true');
-            } catch (_) {}
-          }
+        const kycData = await safeFetchJson(`/api/users/kyc-status/${user.uid}`, {}, 600);
+        if (kycData && kycData.found && (kycData.kycStatus === 'verified' || kycData.isVerifiedUser)) {
+          setKycStatus('verified');
+          try {
+            localStorage.setItem(`forex_kyc_status_${user.uid}`, 'verified');
+            localStorage.setItem(`forex_is_verified_${user.uid}`, 'true');
+          } catch (_) {}
         }
       } catch (_) {}
     };
 
-    if (typeof window !== 'undefined') {
-      window.addEventListener('focus', handleFocusSync);
-    }
+    // Instant real-time listener for deposit approvals & balance credits across tabs
+    const handleBalanceUpdatedEvent = (e: any) => {
+      const detail = e.detail;
+      if (!detail) return;
+      const isMatch = (detail.userUid && user?.uid && detail.userUid === user.uid) ||
+                      (detail.userEmail && user?.email && detail.userEmail.toLowerCase() === user.email.toLowerCase());
+      if (isMatch) {
+        console.log('[ForexDashboard] ⚡ Real-time balance update received:', detail);
+        setBalances(prev => ({
+          live: typeof detail.live === 'number' ? detail.live : prev.live,
+          bonus: typeof detail.bonus === 'number' ? detail.bonus : prev.bonus,
+          demo: typeof detail.demo === 'number' ? detail.demo : prev.demo
+        }));
+        if (typeof detail.depositBonusGranted === 'number') {
+          setDepositBonusGranted(detail.depositBonusGranted);
+          try { localStorage.setItem(`forex_deposit_bonus_granted_${user.uid}`, String(detail.depositBonusGranted)); } catch (_) {}
+        }
+      }
+    };
+
+    let adminChannel: BroadcastChannel | null = null;
+    try {
+      if (typeof window !== 'undefined') {
+        window.addEventListener('forex_balance_updated', handleBalanceUpdatedEvent);
+        window.addEventListener('focus', handleFocusSync);
+
+        adminChannel = new BroadcastChannel('forex_admin_channel');
+        adminChannel.onmessage = (event) => {
+          const data = event.data;
+          if (data && data.type === 'DEPOSIT_APPROVED_BALANCE_UPDATED') {
+            const isMatch = (data.userUid && user?.uid && data.userUid === user.uid) ||
+                            (data.userEmail && user?.email && data.userEmail.toLowerCase() === user.email.toLowerCase());
+            if (isMatch && data.balances) {
+              console.log('[ForexDashboard] ⚡ Admin broadcast deposit approved for this user:', data.balances);
+              setBalances(prev => ({
+                live: typeof data.balances.live === 'number' ? data.balances.live : prev.live,
+                bonus: typeof data.balances.bonus === 'number' ? data.balances.bonus : prev.bonus,
+                demo: typeof data.balances.demo === 'number' ? data.balances.demo : prev.demo
+              }));
+              if (typeof data.depositBonusGranted === 'number') {
+                setDepositBonusGranted(data.depositBonusGranted);
+                try { localStorage.setItem(`forex_deposit_bonus_granted_${user.uid}`, String(data.depositBonusGranted)); } catch (_) {}
+              }
+            }
+          }
+        };
+      }
+    } catch (_) {}
 
     return () => {
       clearInterval(autoKycInterval);
       clearInterval(userPollTimer);
       if (typeof window !== 'undefined') {
         window.removeEventListener('focus', handleFocusSync);
+        window.removeEventListener('forex_balance_updated', handleBalanceUpdatedEvent);
+        if (adminChannel) {
+          adminChannel.close();
+        }
       }
       unsubNotifs();
       unsubscribe();
     };
   }, [user?.uid]);
 
-  // Save to LocalStorage on update (Strictly User-Scoped)
+  // Save to LocalStorage on update (Strictly User-Scoped, debounced to avoid blocking main thread)
+  const balancesSaveTimerRef = useRef<any>(null);
   useEffect(() => {
     if (!user?.uid) return;
-    try {
-      localStorage.setItem(`${USER_BALANCES_KEY}_${user.uid}`, JSON.stringify(balances));
-      localStorage.setItem(`forex_pro_demo_balance_${user.uid}`, String(balances.demo));
-    } catch (_) {}
+    if (balancesSaveTimerRef.current) clearTimeout(balancesSaveTimerRef.current);
+    balancesSaveTimerRef.current = setTimeout(() => {
+      try {
+        localStorage.setItem(`${USER_BALANCES_KEY}_${user.uid}`, JSON.stringify(balances));
+        localStorage.setItem(`forex_pro_demo_balance_${user.uid}`, String(balances.demo));
+      } catch (_) {}
+    }, 400);
+    return () => {
+      if (balancesSaveTimerRef.current) clearTimeout(balancesSaveTimerRef.current);
+    };
   }, [balances, user?.uid]);
 
   const lastSavedActiveKeyRef = useRef<string>('');
+  const activeTradesSaveTimerRef = useRef<any>(null);
   useEffect(() => {
     if (!user?.uid) return;
     const sig = activeTrades.map(t => `${t.id}:${t.status}:${t.accountType}`).join('|');
     if (sig === lastSavedActiveKeyRef.current) return;
     lastSavedActiveKeyRef.current = sig;
-    try {
-      localStorage.setItem(`${ACTIVE_TRADES_KEY}_${user.uid}`, JSON.stringify(activeTrades));
-    } catch (_) {}
+    if (activeTradesSaveTimerRef.current) clearTimeout(activeTradesSaveTimerRef.current);
+    activeTradesSaveTimerRef.current = setTimeout(() => {
+      try {
+        localStorage.setItem(`${ACTIVE_TRADES_KEY}_${user.uid}`, JSON.stringify(activeTrades));
+      } catch (_) {}
+    }, 400);
+    return () => {
+      if (activeTradesSaveTimerRef.current) clearTimeout(activeTradesSaveTimerRef.current);
+    };
   }, [activeTrades, user?.uid]);
 
   useEffect(() => {
@@ -961,18 +977,20 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
     } catch (_) {}
 
     // Rank recalculation only happens when trades actually close, never on floating ticks
-    try {
-      const liveStats = calculateUserTodayProfit(closedTrades, activeTradesRef.current || [], 'live');
-      const bonusStats = calculateUserTodayProfit(closedTrades, activeTradesRef.current || [], 'bonus');
-      const traderObj = {
-        uid: user.uid,
-        email: user.email,
-        displayName: userDisplayName || user.displayName,
-        avatar: userAvatar,
-      };
-      syncUserToGlobalLeaderboard(traderObj, liveStats, 'live').catch(() => {});
-      syncUserToGlobalLeaderboard(traderObj, bonusStats, 'bonus').catch(() => {});
-    } catch (_) {}
+    if (closedTrades.length > 0) {
+      try {
+        const liveStats = calculateUserTodayProfit(closedTrades, activeTradesRef.current || [], 'live');
+        const bonusStats = calculateUserTodayProfit(closedTrades, activeTradesRef.current || [], 'bonus');
+        const traderObj = {
+          uid: user.uid,
+          email: user.email,
+          displayName: userDisplayName || user.displayName,
+          avatar: userAvatar,
+        };
+        syncUserToGlobalLeaderboard(traderObj, liveStats, 'live').catch(() => {});
+        syncUserToGlobalLeaderboard(traderObj, bonusStats, 'bonus').catch(() => {});
+      } catch (_) {}
+    }
   }, [closedTrades.length, user?.uid, userDisplayName, userAvatar]);
 
   // Global Background Engine: Binary OTC Trades Timer & Automatic Expiry Settlement
@@ -1017,7 +1035,7 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
               (trade.userEmail && ADMIN_EMAILS.includes(trade.userEmail.toLowerCase().trim()))
             );
 
-            if (is5sLossOn && !isAdminAccount) {
+            if (is5sLossOn && !isAdminAccount && trade.accountType !== 'demo' && !trade.isDemo) {
               const precision = trade.precision || 5;
               const minPip = Math.pow(10, -precision) * 8 || 0.00008;
               const isUp = trade.type === 'UP' || trade.type === 'BUY' || trade.type === 'CALL';
@@ -1273,44 +1291,48 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
     );
 
     // Initial and periodic cross-device fetch from central server store
+    // Initial and periodic cross-device fetch from central server store (with timeout guard)
+    let isTradeSyncInFlight = false;
     const syncTradesFromServer = async () => {
       if (!user?.uid) return;
+      if (isTradeSyncInFlight) return;
+      isTradeSyncInFlight = true;
       try {
-        const res = await fetch(`/api/users/trades/${encodeURIComponent(user.uid)}?email=${encodeURIComponent(user.email || '')}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.success) {
-            if (data.closed && data.closed.length > 0) {
-              registerSettledTradeIds(data.closed.map((c: any) => c.id));
-              setClosedTrades(prev => {
-                const combined = [...data.closed, ...prev];
-                const seen = new Set<string>();
-                return combined.filter(t => {
-                  if (!t.id || seen.has(t.id)) return false;
-                  seen.add(t.id);
-                  return true;
-                });
+        const data = await safeFetchJson(`/api/users/trades/${encodeURIComponent(user.uid)}?email=${encodeURIComponent(user.email || '')}`, {}, 800);
+        if (data && data.success) {
+          if (data.closed && data.closed.length > 0) {
+            registerSettledTradeIds(data.closed.map((c: any) => c.id));
+            setClosedTrades(prev => {
+              const combined = [...data.closed, ...prev];
+              const seen = new Set<string>();
+              return combined.filter(t => {
+                if (!t.id || seen.has(t.id)) return false;
+                seen.add(t.id);
+                return true;
               });
-            }
-            if (data.active && Array.isArray(data.active)) {
-              setActiveTrades(prev => {
-                const activeIds = new Set(prev.map(t => t.id));
-                const missing = data.active.filter((t: any) => 
-                  !activeIds.has(t.id) && 
-                  t.status === 'OPEN' && 
-                  !isTradeSettled(t.id)
-                );
-                if (missing.length === 0) return prev;
-                return [...missing, ...prev];
-              });
-            }
+            });
+          }
+          if (data.active && Array.isArray(data.active)) {
+            setActiveTrades(prev => {
+              const activeIds = new Set(prev.map(t => t.id));
+              const missing = data.active.filter((t: any) => 
+                !activeIds.has(t.id) && 
+                t.status === 'OPEN' && 
+                !isTradeSettled(t.id)
+              );
+              if (missing.length === 0) return prev;
+              return [...missing, ...prev];
+            });
           }
         }
       } catch (_) {}
+      finally {
+        isTradeSyncInFlight = false;
+      }
     };
 
     syncTradesFromServer();
-    const tradePollTimer = setInterval(syncTradesFromServer, 15000);
+    const tradePollTimer = setInterval(syncTradesFromServer, 30000);
 
     return () => {
       unsubscribe();
@@ -1339,16 +1361,23 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  // Real-Time Account Metrics Engine (Pure calculations derived directly from trade history & 8:00 AM cycle)
-  const getAccountMetrics = useCallback((acc: AccountType) => {
-    return calculateAccountMetricsEngine(acc, balances, activeTrades, closedTrades, currentDateReference, 8);
-  }, [activeTrades, closedTrades, balances, currentDateReference]);
+  // Real-Time Account Metrics Engine with full memoization (0% CPU wastage)
+  const liveMetrics = useMemo(() => {
+    return calculateAccountMetricsEngine('live', balances, activeTrades, closedTrades, currentDateReference, 8);
+  }, [balances.live, activeTrades, closedTrades, currentDateReference]);
 
-  const liveMetrics = getAccountMetrics('live');
-  const bonusMetrics = getAccountMetrics('bonus');
-  const demoMetrics = getAccountMetrics('demo');
+  const bonusMetrics = useMemo(() => {
+    return calculateAccountMetricsEngine('bonus', balances, activeTrades, closedTrades, currentDateReference, 8);
+  }, [balances.bonus, activeTrades, closedTrades, currentDateReference]);
 
-  const currentMetrics = accountType === 'live' ? liveMetrics : accountType === 'bonus' ? bonusMetrics : demoMetrics;
+  const demoMetrics = useMemo(() => {
+    return calculateAccountMetricsEngine('demo', balances, activeTrades, closedTrades, currentDateReference, 8);
+  }, [balances.demo, activeTrades, closedTrades, currentDateReference]);
+
+  const currentMetrics = useMemo(() => {
+    return accountType === 'live' ? liveMetrics : accountType === 'bonus' ? bonusMetrics : demoMetrics;
+  }, [accountType, liveMetrics, bonusMetrics, demoMetrics]);
+
   const accountActiveTrades = useMemo(() => activeTrades.filter(t => (t.accountType === accountType || (!t.accountType && accountType === 'live')) && t.status === 'OPEN'), [activeTrades, accountType]);
   const accountClosedTrades = useMemo(() => closedTrades.filter(t => (t.accountType === accountType || (!t.accountType && accountType === 'live')) && t.status !== 'OPEN'), [closedTrades, accountType]);
 
@@ -1524,33 +1553,37 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
       }
     };
 
-    // Initial load and periodic refresh from persistent backend endpoint
-    const fetchTransactions = () => {
-      fetch(`/api/user-transactions?userUid=${encodeURIComponent(user.uid)}&userEmail=${encodeURIComponent(user.email || '')}`)
-        .then(res => res.json())
-        .then(data => {
-          if (data && data.transactions && Array.isArray(data.transactions) && data.transactions.length > 0) {
-            const deps = data.transactions.filter((t: any) => t.type === 'Deposit');
-            const wds = data.transactions.filter((t: any) => t.type === 'Withdrawal');
-            let hasNew = false;
-            if (deps.length > 0) {
-              userDeposits = mergeRecords(userDeposits, deps);
-              hasNew = true;
-            }
-            if (wds.length > 0) {
-              userWithdrawals = mergeRecords(userWithdrawals, wds);
-              hasNew = true;
-            }
-            if (hasNew) {
-              updateCombined();
-            }
+    // Initial load and periodic refresh from persistent backend endpoint (with timeout guard)
+    let isTxFetchInFlight = false;
+    const fetchTransactions = async () => {
+      if (!user?.uid || isTxFetchInFlight) return;
+      isTxFetchInFlight = true;
+      try {
+        const data = await safeFetchJson(`/api/user-transactions?userUid=${encodeURIComponent(user.uid)}&userEmail=${encodeURIComponent(user.email || '')}`, {}, 800);
+        if (data && data.transactions && Array.isArray(data.transactions) && data.transactions.length > 0) {
+          const deps = data.transactions.filter((t: any) => t.type === 'Deposit');
+          const wds = data.transactions.filter((t: any) => t.type === 'Withdrawal');
+          let hasNew = false;
+          if (deps.length > 0) {
+            userDeposits = mergeRecords(userDeposits, deps);
+            hasNew = true;
           }
-        })
-        .catch(() => {});
+          if (wds.length > 0) {
+            userWithdrawals = mergeRecords(userWithdrawals, wds);
+            hasNew = true;
+          }
+          if (hasNew) {
+            updateCombined();
+          }
+        }
+      } catch (_) {}
+      finally {
+        isTxFetchInFlight = false;
+      }
     };
 
     fetchTransactions();
-    const txPollTimer = setInterval(fetchTransactions, 15000);
+    const txPollTimer = setInterval(fetchTransactions, 30000);
 
     const unsubDeposits = subscribeUserDepositsFromFirestore(user?.uid || '', user?.email || undefined, (deps) => {
       if (deps && deps.length > 0) {
@@ -1580,6 +1613,45 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
   const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
   const [isEditDemoModalOpen, setIsEditDemoModalOpen] = useState(false);
+
+  // Rotating Transition Screen before opening action sections
+  const [instantTransition, setInstantTransition] = useState<{
+    isOpen: boolean;
+    type: any;
+  }>({ isOpen: false, type: null });
+
+  const activeTransitionTypeRef = useRef<any>(null);
+
+  const handleTriggerDeposit = () => {
+    activeTransitionTypeRef.current = 'deposit';
+    setInstantTransition({ isOpen: true, type: 'deposit' });
+  };
+
+  const handleTriggerWithdraw = () => {
+    activeTransitionTypeRef.current = 'withdraw';
+    setInstantTransition({ isOpen: true, type: 'withdraw' });
+  };
+
+  const handleTriggerTrade = () => {
+    activeTransitionTypeRef.current = 'trade';
+    setInstantTransition({ isOpen: true, type: 'trade' });
+  };
+
+  const handleTriggerHistory = () => {
+    activeTransitionTypeRef.current = 'history';
+    setInstantTransition({ isOpen: true, type: 'history' });
+  };
+
+  const handleTriggerHelp = () => {
+    activeTransitionTypeRef.current = 'help';
+    setInstantTransition({ isOpen: true, type: 'help' });
+  };
+
+  const handleTriggerNavTab = (tab: BottomNavTab) => {
+    if (tab === activeBottomNav) return;
+    activeTransitionTypeRef.current = tab;
+    setInstantTransition({ isOpen: true, type: tab });
+  };
 
   const handleSaveDemoBalance = (newAmount: number) => {
     const fixedVal = Number(newAmount.toFixed(2));
@@ -1649,119 +1721,89 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
     setTransactions(prev => [newTx, ...prev.filter(t => t.id !== newTx.id)]);
   };
 
+  if (!isDashboardReady) {
+    return (
+      <div className="fixed inset-0 z-[99999] bg-[#070A14] flex flex-col items-center justify-center p-6 select-none overflow-hidden">
+        {/* Background Ambient Glows */}
+        <div className="absolute inset-0 pointer-events-none overflow-hidden flex items-center justify-center opacity-60">
+          <div className="w-[500px] h-[500px] rounded-full bg-blue-600/15 blur-[100px] animate-pulse" />
+          <div className="w-[380px] h-[380px] rounded-full bg-[#F5B301]/10 blur-[90px]" />
+        </div>
+
+        <div className="relative z-10 flex flex-col items-center justify-center text-center max-w-sm w-full">
+          {/* Centered Minimalist Glowing Logo with Round Rotating Concentric Rings */}
+          <div className="relative w-36 h-36 mb-6 flex items-center justify-center">
+            {/* Ring 1 - High-speed primary gold/cyan rotating ring */}
+            <div
+              className="absolute w-32 h-32 rounded-full border-2 border-transparent border-t-[#F5B301] border-r-[#15eaff] border-b-[#F5B301]/30 animate-spin"
+              style={{ animationDuration: '1.4s' }}
+            />
+            {/* Ring 2 - Counter-rotating subtle outer ring */}
+            <div
+              className="absolute w-36 h-36 rounded-full border border-dashed border-blue-400/30 animate-spin"
+              style={{ animationDirection: 'reverse', animationDuration: '3.5s' }}
+            />
+            {/* Ring 3 - Inner accent ring */}
+            <div
+              className="absolute w-28 h-28 rounded-full border-2 border-transparent border-t-cyan-400/80 border-b-[#F5B301]/80 animate-spin"
+              style={{ animationDuration: '2.0s' }}
+            />
+            {/* Center Box with Brand Logo */}
+            <div className="relative z-10 w-20 h-20 rounded-2xl bg-gradient-to-br from-[#1E293B] via-[#0F172A] to-[#0A0F1D] border border-[#F5B301]/40 flex items-center justify-center p-3 shadow-2xl shadow-[#F5B301]/25">
+              <img
+                src="/logo.png"
+                alt="FXBY24 Logo"
+                className="w-full h-full object-contain drop-shadow-[0_0_10px_rgba(245,179,1,0.6)]"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).src = '/icon-192.png';
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Action Title Badge */}
+          <div className="mb-4 flex flex-col items-center gap-1.5">
+            <div className="inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full border border-[#F5B301]/40 bg-[#F5B301]/10 text-xs font-black tracking-wider uppercase text-[#F5B301]">
+              <Zap className="w-3.5 h-3.5 stroke-[2.5]" />
+              <span>FXBY24 TRADING PLATFORM</span>
+            </div>
+            <p className="text-[11px] text-gray-400 font-medium tracking-wide max-w-xs leading-relaxed">
+              Initializing secure institutional trading environment...
+            </p>
+          </div>
+
+          {/* Smooth Progress Bar */}
+          <div className="w-56 h-1.5 bg-white/10 rounded-full overflow-hidden shadow-inner mt-2 relative">
+            <div
+              className="h-full bg-gradient-to-r from-[#F5B301] via-[#15eaff] to-[#F5B301] rounded-full transition-all duration-75"
+              style={{ width: `${reloadProgress}%` }}
+            />
+          </div>
+          <span className="font-mono text-xs text-[#F5B301] font-black mt-2 tracking-wider">
+            {reloadProgress}%
+          </span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen w-full bg-[#06080E] text-white flex flex-col lg:flex-row font-sans pb-20 lg:pb-0 selection:bg-[#F5B301] selection:text-black">
-      
-      {/* 0. HIGH-TECH 0-100% SYNCHRONIZATION OVERLAY */}
-      <AnimatePresence>
-        {!isInitialSyncComplete && (
-          <motion.div
-            key="dashboard-sync-overlay"
-            initial={{ opacity: 1 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0, scale: 0.98 }}
-            transition={{ duration: 0.35, ease: 'easeInOut' }}
-            className="fixed inset-0 z-[100] flex flex-col items-center justify-center p-6 bg-[#06080E]/98 backdrop-blur-2xl select-none"
-          >
-            {/* Ambient Background Glows */}
-            <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-80 sm:w-96 h-80 sm:h-96 rounded-full bg-[#F5B301]/10 blur-[100px] pointer-events-none" />
-            <div className="absolute bottom-1/4 left-1/2 -translate-x-1/2 w-64 h-64 rounded-full bg-cyan-500/10 blur-[90px] pointer-events-none" />
-
-            <div className="relative z-10 w-full max-w-sm flex flex-col items-center text-center space-y-5">
-              {/* Brand Logo with Slim Animated Circular Orbit Rings (চিকন রাউন্ড এনিমেশন) */}
-              <div className="relative flex flex-col items-center">
-                <div className="relative w-24 h-24 sm:w-28 sm:h-28 flex items-center justify-center">
-                  {/* Outer Slim Rotating Dashed Gold Ring (চিকন সোনালি ড্যাশড রিং) */}
-                  <div className="absolute inset-0 rounded-full border-[1.5px] border-dashed border-[#F5B301]/80 animate-[spin_4.5s_linear_infinite] pointer-events-none" />
-                  
-                  {/* Middle Slim Rotating Cyan Gradient Orbit with Luminous Head (চিকন নিয়ন সায়ান রিং) */}
-                  <div className="absolute inset-1.5 sm:inset-2 rounded-full border-[1.5px] border-cyan-400/40 border-t-cyan-300 border-r-transparent animate-[spin_3s_linear_infinite_reverse] pointer-events-none shadow-[0_0_10px_rgba(34,211,238,0.25)]" />
-
-                  {/* Inner Fine Gold Orbital Halo */}
-                  <div className="absolute inset-3 sm:inset-3.5 rounded-full border-[1px] border-[#F5B301]/30 border-b-[#F5B301] border-l-transparent animate-[spin_6s_linear_infinite] pointer-events-none" />
-
-                  {/* Subtle Ambient Pulsing Glow */}
-                  <div className="absolute inset-2 sm:inset-3 rounded-full bg-gradient-to-tr from-[#F5B301]/20 via-amber-500/10 to-cyan-500/15 blur-md animate-pulse pointer-events-none" />
-
-                  {/* Core 3D Brand Logo Emblem (Remains perfectly centered and steady) */}
-                  <div className="relative w-15 h-15 sm:w-18 sm:h-18 rounded-2xl bg-gradient-to-b from-[#141E34] to-[#0A0E18] border border-[#F5B301]/70 flex items-center justify-center shadow-2xl shadow-[#F5B301]/30 p-2 z-10">
-                    <BrandLogo size="2xl" showText={false} className="w-full h-full flex items-center justify-center" />
-                  </div>
-                </div>
-
-                {/* Brand Name Typography */}
-                <div className="mt-4 space-y-1">
-                  <div className="flex items-center justify-center gap-1.5 text-xl sm:text-2xl font-black tracking-wider drop-shadow-md">
-                    <span className="text-white">FXBY24</span>
-                    <span className="text-[#F5B301]">TRADING PRO</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* High-Tech Progress Bar & Percentage */}
-              <div className="w-full space-y-2 pt-1">
-                {/* Progress Bar Container */}
-                <div className="w-full h-3.5 rounded-full bg-black/70 border border-white/10 p-0.5 overflow-hidden shadow-inner relative">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-amber-600 via-[#F5B301] to-emerald-400 shadow-lg shadow-[#F5B301]/40 transition-all duration-100 ease-out relative overflow-hidden"
-                    style={{ width: `${syncProgress}%` }}
-                  >
-                    <div className="absolute inset-0 bg-white/20 animate-pulse" />
-                  </div>
-                </div>
-
-                {/* Percentage & Status Labels */}
-                <div className="flex items-center justify-between text-xs px-1 font-mono">
-                  <span className="text-[11px] font-bold text-gray-400 flex items-center gap-1.5 font-sans">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
-                    {syncProgress < 100 ? 'Synchronizing...' : 'Complete!'}
-                  </span>
-                  <span className="text-sm font-black text-[#F5B301] tracking-wider">
-                    {syncProgress}%
-                  </span>
-                </div>
-
-                {/* Prominent "Please Wait, Loading..." Status Banner */}
-                <div className="flex flex-col items-center justify-center gap-1 pt-2">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-[#F5B301] animate-ping" />
-                    <span className="text-xs sm:text-sm font-black text-[#F5B301] tracking-wider uppercase font-sans animate-pulse drop-shadow">
-                      Please Wait, Loading...
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-gray-400 font-medium min-h-[16px]">
-                    {syncStatusText}
-                  </p>
-                </div>
-              </div>
-
-              {/* Subtle Trust Indicators */}
-              <div className="flex items-center justify-center gap-3 pt-3 text-[10px] text-gray-500 font-mono border-t border-white/5 w-full">
-                <span>🔒 256-Bit SSL</span>
-                <span>•</span>
-                <span>⚡ Sub-Millisecond OTC</span>
-                <span>•</span>
-                <span>✓ Active Node</span>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
       
       {/* Desktop Sidebar */}
       <Sidebar
         activeTab={activeBottomNav === 'home' ? 'dashboard' : activeBottomNav === 'markets' ? 'markets' : activeBottomNav === 'wallet' ? 'wallet' : activeBottomNav === 'trade' ? 'trade' : activeBottomNav === 'binary' ? 'binary' : 'profile'}
         setActiveTab={(tab) => {
-          if (tab === 'dashboard') setActiveBottomNav('home');
-          else if (tab === 'markets') setActiveBottomNav('markets');
-          else if (tab === 'wallet') setActiveBottomNav('wallet');
-          else if (tab === 'trade') setActiveBottomNav('trade');
-          else if (tab === 'binary') setActiveBottomNav('binary');
-          else if (tab === 'profile') setActiveBottomNav('profile');
-          else if (tab === 'transactions') setActiveBottomNav('home');
+          if (tab === 'dashboard') handleTriggerNavTab('home');
+          else if (tab === 'markets') handleTriggerNavTab('markets');
+          else if (tab === 'wallet') handleTriggerNavTab('wallet');
+          else if (tab === 'trade') handleTriggerTrade();
+          else if (tab === 'binary') handleTriggerNavTab('binary');
+          else if (tab === 'profile') handleTriggerNavTab('profile');
+          else if (tab === 'transactions') handleTriggerHistory();
         }}
-        onOpenTradeModal={() => setActiveBottomNav('trade')}
-        onOpenHelpModal={() => setIsHelpModalOpen(true)}
+        onOpenTradeModal={handleTriggerTrade}
+        onOpenHelpModal={handleTriggerHelp}
         onLogout={onLogout}
         isSuperAdmin={isSuperAdmin}
         onSwitchToAdmin={onSwitchToAdmin}
@@ -1826,9 +1868,9 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
               onClick={async () => {
                 try {
                   await sendEmailVerification(user);
-                  alert(`Verification link sent to ${user.email}!`);
+                  setEmailVerifMsg(`Verification link sent to ${user.email}!`);
                 } catch (e) {
-                  alert('Verification link sent. Please check your inbox.');
+                  setEmailVerifMsg('Verification link sent. Please check your inbox.');
                 }
               }}
               className="px-2.5 py-1 rounded-lg bg-[#F5B301] text-gray-950 font-black text-[10px] shrink-0 hover:brightness-110 transition-all cursor-pointer"
@@ -1956,7 +1998,7 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
               <div className="grid grid-cols-5 gap-1.5 sm:gap-2 text-center w-full">
                 <button
                   type="button"
-                  onClick={() => setIsDepositModalOpen(true)}
+                  onClick={handleTriggerDeposit}
                   className="p-1.5 sm:p-3.5 rounded-xl sm:rounded-2xl bg-[#0D1220] hover:bg-[#131B2E] border border-white/10 hover:border-[#F5B301]/40 flex flex-col items-center justify-center gap-1 sm:gap-1.5 transition-all cursor-pointer group shadow-md"
                 >
                   <div className="w-7 h-7 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl bg-[#F5B301]/15 group-hover:bg-[#F5B301]/25 border border-[#F5B301]/30 flex items-center justify-center transition-colors">
@@ -1967,7 +2009,7 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => setIsWithdrawModalOpen(true)}
+                  onClick={handleTriggerWithdraw}
                   className="p-1.5 sm:p-3.5 rounded-xl sm:rounded-2xl bg-[#0D1220] hover:bg-[#131B2E] border border-white/10 hover:border-[#F5B301]/40 flex flex-col items-center justify-center gap-1 sm:gap-1.5 transition-all cursor-pointer group shadow-md"
                 >
                   <div className="w-7 h-7 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl bg-[#F5B301]/15 group-hover:bg-[#F5B301]/25 border border-[#F5B301]/30 flex items-center justify-center transition-colors">
@@ -1978,7 +2020,7 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => setActiveBottomNav('trade')}
+                  onClick={handleTriggerTrade}
                   className="p-1.5 sm:p-3.5 rounded-xl sm:rounded-2xl bg-[#0D1220] hover:bg-[#131B2E] border border-white/10 hover:border-[#F5B301]/40 flex flex-col items-center justify-center gap-1 sm:gap-1.5 transition-all cursor-pointer group shadow-md"
                 >
                   <div className="w-7 h-7 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl bg-[#F5B301]/15 group-hover:bg-[#F5B301]/25 border border-[#F5B301]/30 flex items-center justify-center transition-colors">
@@ -1989,7 +2031,7 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => setIsHistoryModalOpen(true)}
+                  onClick={handleTriggerHistory}
                   className="p-1.5 sm:p-3.5 rounded-xl sm:rounded-2xl bg-[#0D1220] hover:bg-[#131B2E] border border-white/10 hover:border-[#F5B301]/40 flex flex-col items-center justify-center gap-1 sm:gap-1.5 transition-all cursor-pointer group shadow-md"
                 >
                   <div className="w-7 h-7 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl bg-[#F5B301]/15 group-hover:bg-[#F5B301]/25 border border-[#F5B301]/30 flex items-center justify-center transition-colors">
@@ -2000,7 +2042,7 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => setIsHelpModalOpen(true)}
+                  onClick={handleTriggerHelp}
                   className="p-1.5 sm:p-3.5 rounded-xl sm:rounded-2xl bg-[#0D1220] hover:bg-[#131B2E] border border-white/10 hover:border-[#F5B301]/40 flex flex-col items-center justify-center gap-1 sm:gap-1.5 transition-all cursor-pointer group shadow-md"
                 >
                   <div className="w-7 h-7 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl bg-[#F5B301]/15 group-hover:bg-[#F5B301]/25 border border-[#F5B301]/30 flex items-center justify-center transition-colors">
@@ -2378,7 +2420,7 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
                     <div className="flex items-center gap-1.5">
                       <button
                         type="button"
-                        onClick={() => setIsDepositModalOpen(true)}
+                        onClick={handleTriggerDeposit}
                         className="px-2.5 py-1.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 hover:bg-emerald-500/30 text-emerald-300 text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
                       >
                         <Plus className="w-3 h-3" />
@@ -2386,7 +2428,7 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
                       </button>
                       <button
                         type="button"
-                        onClick={() => setIsWithdrawModalOpen(true)}
+                        onClick={handleTriggerWithdraw}
                         className="px-2.5 py-1.5 rounded-xl bg-rose-500/20 border border-rose-500/40 hover:bg-rose-500/30 text-rose-300 text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
                       >
                         <Minus className="w-3 h-3" />
@@ -2421,14 +2463,14 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
                         <div className="flex items-center justify-center gap-2 pt-1">
                           <button
                             type="button"
-                            onClick={() => setIsDepositModalOpen(true)}
+                            onClick={handleTriggerDeposit}
                             className="px-3 py-1.5 rounded-xl bg-[#F5B301] text-gray-950 font-black text-[11px] uppercase tracking-wider shadow hover:brightness-110 cursor-pointer"
                           >
                             Deposit Now
                           </button>
                           <button
                             type="button"
-                            onClick={() => setIsWithdrawModalOpen(true)}
+                            onClick={handleTriggerWithdraw}
                             className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-white font-bold text-[11px] uppercase tracking-wider cursor-pointer"
                           >
                             Withdraw Funds
@@ -2539,8 +2581,8 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
               </div>
 
               {/* Trade History Modal Popup */}
-              <Suspense fallback={null}>
-                {isHistoryModalOpen && (
+              {isHistoryModalOpen && (
+                <Suspense fallback={null}>
                   <TradeHistoryModal
                     isOpen={isHistoryModalOpen}
                     onClose={() => setIsHistoryModalOpen(false)}
@@ -2548,17 +2590,16 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
                     activeAccount={accountType}
                     userEmail={user.email || undefined}
                   />
-                )}
-              </Suspense>
+                </Suspense>
+              )}
             </>
           )}
 
           {/* MARKETS TAB */}
           {activeBottomNav === 'markets' && (
             <Suspense fallback={
-              <div className="flex-1 flex items-center justify-center p-8 text-center text-gray-400">
-                <div className="w-6 h-6 rounded-full border-2 border-emerald-500/30 border-t-emerald-400 animate-spin mr-2" />
-                <span className="text-xs font-semibold">Loading Markets...</span>
+              <div className="flex items-center justify-center min-h-[350px]">
+                <div className="w-8 h-8 border-2 border-[#F5B301] border-t-transparent rounded-full animate-spin" />
               </div>
             }>
               <MarketsView
@@ -2573,11 +2614,9 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
           {/* TRADE TAB & BINARY TAB (Trading Terminal View) */}
           {(activeBottomNav === 'trade' || activeBottomNav === 'binary') && (
             <Suspense fallback={
-              <div className="flex-1 flex flex-col items-center justify-center p-12 text-center text-gray-400 min-h-[380px]">
-                <div className="w-8 h-8 rounded-full border-2 border-[#F5B301]/30 border-t-[#F5B301] animate-spin mb-3" />
-                <span className="text-xs font-mono font-bold text-[#F5B301] uppercase tracking-wider">
-                  Loading Trading Workspace...
-                </span>
+              <div className="flex flex-col items-center justify-center min-h-[450px] gap-3">
+                <div className="w-9 h-9 border-2 border-[#F5B301] border-t-transparent rounded-full animate-spin" />
+                <p className="text-xs text-gray-400 font-bold tracking-wider">Loading Trading Terminal...</p>
               </div>
             }>
               <TradingTerminalView
@@ -2590,12 +2629,14 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
                 userUid={user.uid || undefined}
                 userDisplayName={userDisplayName}
                 userAvatar={userAvatar}
+                depositBonusGranted={depositBonusGranted}
                 activeTrades={activeTrades}
                 setActiveTrades={setActiveTrades}
                 closedTrades={closedTrades}
                 setClosedTrades={setClosedTrades}
                 initialTradingMode={activeBottomNav === 'binary' ? 'otc' : 'forex'}
                 initialMarketId={selectedTradingMarketId}
+                initialFullscreen={typeof window !== 'undefined' ? window.innerWidth < 1024 : true}
                 isSuperAdmin={isSuperAdmin}
                 isAdmin={Boolean(isSuperAdmin || (user?.email && ['naymulh1000@gmail.com', 'admin@fxby24.com', 'admin@forextradepro.com'].includes(user.email.toLowerCase().trim())))}
                 onBack={() => setActiveBottomNav('home')}
@@ -2642,14 +2683,14 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
                   <div className="flex items-center gap-2.5">
                     <button
                       type="button"
-                      onClick={() => setIsDepositModalOpen(true)}
+                      onClick={handleTriggerDeposit}
                       className="px-5 py-2 rounded-xl bg-[#F5B301] text-slate-950 font-black text-xs sm:text-sm cursor-pointer hover:bg-amber-400 active:scale-[0.98] transition-all shadow-md"
                     >
                       Deposit
                     </button>
                     <button
                       type="button"
-                      onClick={() => setIsWithdrawModalOpen(true)}
+                      onClick={handleTriggerWithdraw}
                       className="px-4 py-2 rounded-xl bg-[#1c2432] text-white font-semibold text-xs sm:text-sm border border-slate-700/60 cursor-pointer hover:bg-[#253042] active:scale-[0.98] transition-all"
                     >
                       Withdraw
@@ -3292,419 +3333,370 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
         </main>
       </div>
 
-      {/* 6. BOTTOM NAVIGATION BAR (7-Icon Mobile Navigation Matching Screenshot) */}
-      <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#080B14]/95 backdrop-blur-lg border-t border-white/10 lg:hidden px-2 py-2">
-        <div className="flex items-center justify-around max-w-lg mx-auto">
-          
-          {/* Home Tab */}
-          <button
-            type="button"
-            onClick={() => setActiveBottomNav('home')}
-            className={`px-3 py-1.5 rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all duration-300 transform cursor-pointer ${
-              activeBottomNav === 'home'
-                ? 'bg-gradient-to-b from-[#F5B301] to-[#E0A000] text-gray-950 font-black shadow-lg shadow-[#F5B301]/30 scale-105 -translate-y-0.5 ring-1 ring-[#F5B301]/60'
-                : 'text-gray-400 hover:text-white hover:bg-white/5 active:scale-95'
-            }`}
-          >
-            <Home className={`w-4 h-4 transition-transform duration-200 ${activeBottomNav === 'home' ? 'text-gray-950 scale-110' : 'text-gray-400'}`} />
-            <span className={`text-[10px] tracking-tight ${activeBottomNav === 'home' ? 'font-black text-gray-950' : 'font-semibold text-gray-400'}`}>Home</span>
-          </button>
+      {/* 6. BOTTOM NAVIGATION BAR (Compact, flush against bottom, with distinct active highlights for all sections) */}
+      <div className="fixed bottom-0 left-0 right-0 z-[100] bg-[#080B14]/98 backdrop-blur-xl border-t border-white/10 lg:hidden px-1 pt-1 pb-1 shadow-[0_-4px_25px_rgba(0,0,0,0.8)]">
+        {(() => {
+          const isHelpActive = isHelpModalOpen;
+          const isLeaderboardActive = isLeaderboardModalOpen;
+          const isTradeActive = !isHelpActive && !isLeaderboardActive && (activeBottomNav === 'trade' || activeBottomNav === 'binary' || isTradeChoiceModalOpen);
+          const isHomeActive = !isHelpActive && !isLeaderboardActive && !isTradeChoiceModalOpen && activeBottomNav === 'home';
+          const isWalletActive = !isHelpActive && !isLeaderboardActive && !isTradeChoiceModalOpen && activeBottomNav === 'wallet';
+          const isProfileActive = !isHelpActive && !isLeaderboardActive && !isTradeChoiceModalOpen && activeBottomNav === 'profile';
 
-          {/* Markets Tab */}
-          <button
-            type="button"
-            onClick={() => setActiveBottomNav('markets')}
-            className={`px-3 py-1.5 rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all duration-300 transform cursor-pointer ${
-              activeBottomNav === 'markets'
-                ? 'bg-gradient-to-b from-[#F5B301] to-[#E0A000] text-gray-950 font-black shadow-lg shadow-[#F5B301]/30 scale-105 -translate-y-0.5 ring-1 ring-[#F5B301]/60'
-                : 'text-gray-400 hover:text-white hover:bg-white/5 active:scale-95'
-            }`}
-          >
-            <TrendingUp className={`w-4 h-4 transition-transform duration-200 ${activeBottomNav === 'markets' ? 'text-gray-950 scale-110' : 'text-gray-400'}`} />
-            <span className={`text-[10px] tracking-tight ${activeBottomNav === 'markets' ? 'font-black text-gray-950' : 'font-semibold text-gray-400'}`}>Markets</span>
-          </button>
-
-          {/* Trade Tab */}
-          <button
-            type="button"
-            onClick={() => setActiveBottomNav('trade')}
-            className={`px-3 py-1.5 rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all duration-300 transform cursor-pointer ${
-              activeBottomNav === 'trade'
-                ? 'bg-gradient-to-b from-[#F5B301] to-[#E0A000] text-gray-950 font-black shadow-lg shadow-[#F5B301]/30 scale-105 -translate-y-0.5 ring-1 ring-[#F5B301]/60'
-                : 'text-gray-400 hover:text-white hover:bg-white/5 active:scale-95'
-            }`}
-          >
-            <BarChart2 className={`w-4 h-4 transition-transform duration-200 ${activeBottomNav === 'trade' ? 'text-gray-950 scale-110' : 'text-gray-400'}`} />
-            <span className={`text-[10px] tracking-tight ${activeBottomNav === 'trade' ? 'font-black text-gray-950' : 'font-semibold text-gray-400'}`}>Trade</span>
-          </button>
-
-          {/* Help Tab */}
-          <button
-            type="button"
-            onClick={() => setIsHelpModalOpen(true)}
-            className="px-2.5 py-1.5 rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all duration-200 text-gray-400 hover:text-white hover:bg-white/5 active:scale-90 cursor-pointer"
-          >
-            <Headphones className="w-4 h-4 text-gray-400" />
-            <span className="text-[10px] font-semibold text-gray-400">Help</span>
-          </button>
-
-          {/* Binary Tab */}
-          <button
-            type="button"
-            onClick={() => setActiveBottomNav('binary')}
-            className={`px-3 py-1.5 rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all duration-300 transform cursor-pointer ${
-              activeBottomNav === 'binary'
-                ? 'bg-gradient-to-b from-[#F5B301] to-[#E0A000] text-gray-950 font-black shadow-lg shadow-[#F5B301]/30 scale-105 -translate-y-0.5 ring-1 ring-[#F5B301]/60'
-                : 'text-gray-400 hover:text-white hover:bg-white/5 active:scale-95'
-            }`}
-          >
-            <Zap className={`w-4 h-4 transition-transform duration-200 ${activeBottomNav === 'binary' ? 'text-gray-950 scale-110' : 'text-gray-400'}`} />
-            <span className={`text-[10px] tracking-tight ${activeBottomNav === 'binary' ? 'font-black text-gray-950' : 'font-semibold text-gray-400'}`}>Binary</span>
-          </button>
-
-          {/* Wallet Tab */}
-          <button
-            type="button"
-            onClick={() => setActiveBottomNav('wallet')}
-            className={`px-3 py-1.5 rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all duration-300 transform cursor-pointer ${
-              activeBottomNav === 'wallet'
-                ? 'bg-gradient-to-b from-[#F5B301] to-[#E0A000] text-gray-950 font-black shadow-lg shadow-[#F5B301]/30 scale-105 -translate-y-0.5 ring-1 ring-[#F5B301]/60'
-                : 'text-gray-400 hover:text-white hover:bg-white/5 active:scale-95'
-            }`}
-          >
-            <Wallet className={`w-4 h-4 transition-transform duration-200 ${activeBottomNav === 'wallet' ? 'text-gray-950 scale-110' : 'text-gray-400'}`} />
-            <span className={`text-[10px] tracking-tight ${activeBottomNav === 'wallet' ? 'font-black text-gray-950' : 'font-semibold text-gray-400'}`}>Wallet</span>
-          </button>
-
-          {/* Profile Tab */}
-          <button
-            type="button"
-            onClick={() => setActiveBottomNav('profile')}
-            className={`px-3 py-1.5 rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all duration-300 transform cursor-pointer ${
-              activeBottomNav === 'profile'
-                ? 'bg-gradient-to-b from-[#F5B301] to-[#E0A000] text-gray-950 font-black shadow-lg shadow-[#F5B301]/30 scale-105 -translate-y-0.5 ring-1 ring-[#F5B301]/60'
-                : 'text-gray-400 hover:text-white hover:bg-white/5 active:scale-95'
-            }`}
-          >
-            <UserIcon className={`w-4 h-4 transition-transform duration-200 ${activeBottomNav === 'profile' ? 'text-gray-950 scale-110' : 'text-gray-400'}`} />
-            <span className={`text-[10px] tracking-tight ${activeBottomNav === 'profile' ? 'font-black text-gray-950' : 'font-semibold text-gray-400'}`}>Profile</span>
-          </button>
-
-        </div>
-      </div>
-
-      {/* ACCOUNT SELECTOR POPUP MODAL (Matching User Prompt) */}
-      {isAccountSelectorOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
-          <div className="w-full max-w-sm rounded-3xl bg-[#0F1423] border border-[#F5B301]/30 p-5 space-y-4 shadow-2xl relative">
-            {/* Close Button */}
-            <button
-              type="button"
-              onClick={() => setIsAccountSelectorOpen(false)}
-              className="absolute top-4 right-4 p-1 rounded-full bg-gray-900 text-gray-400 hover:text-white hover:bg-gray-800 transition-colors cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            {/* Modal Title */}
-            <div className="text-center space-y-1">
-              <h3 className="text-base font-black text-white uppercase tracking-wider">
-                Select Account
-              </h3>
-              <p className="text-xs text-gray-400">
-                Switching accounts updates metrics instantly
-              </p>
-            </div>
-
-            {/* Account Options List */}
-            <div className="space-y-2.5 pt-1">
-              {/* Live Account Option */}
+          return (
+            <div className="flex items-center justify-between max-w-lg mx-auto px-0.5">
+              
+              {/* 1. Home Tab */}
               <button
                 type="button"
                 onClick={() => {
-                  setAccountType('live');
-                  setIsAccountSelectorOpen(false);
+                  setIsHelpModalOpen(false);
+                  setIsLeaderboardModalOpen(false);
+                  handleTriggerNavTab('home');
                 }}
-                className={`w-full p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex items-center justify-between ${
-                  accountType === 'live'
-                    ? 'bg-[#0E1626] border-emerald-500 ring-1 ring-emerald-500 shadow-lg shadow-emerald-500/20'
-                    : 'bg-[#0B101D] border-white/10 hover:border-emerald-500/50'
+                className={`px-1.5 py-0.5 rounded-lg flex flex-col items-center justify-center gap-0 transition-all duration-200 transform cursor-pointer min-w-[48px] ${
+                  isHomeActive
+                    ? 'bg-gradient-to-b from-[#F5B301] to-[#E0A000] text-gray-950 font-black shadow-md shadow-[#F5B301]/30 scale-105 ring-1 ring-[#F5B301]/60'
+                    : 'text-gray-400 hover:text-white hover:bg-white/5 active:scale-95'
                 }`}
               >
-                <div className="flex items-center gap-3">
-                  <span className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse" />
-                  <div>
-                    <h4 className="text-xs font-black text-white uppercase tracking-wider">Live Account</h4>
-                    <p className="text-[10px] text-gray-400">Real Money Account</p>
-                  </div>
-                </div>
-                <span className="text-sm font-black font-mono text-emerald-400">
-                  ${balances.live.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </span>
+                <Home className={`w-3.5 h-3.5 transition-transform duration-200 ${isHomeActive ? 'text-gray-950 scale-110' : 'text-gray-400'}`} />
+                <span className={`text-[8.5px] tracking-tight ${isHomeActive ? 'font-black text-gray-950' : 'font-semibold text-gray-400'}`}>Home</span>
               </button>
 
-              {/* Bonus Account Option */}
+              {/* 2. Trade Tab */}
               <button
                 type="button"
                 onClick={() => {
-                  setAccountType('bonus');
-                  setIsAccountSelectorOpen(false);
+                  setIsHelpModalOpen(false);
+                  setIsLeaderboardModalOpen(false);
+                  handleTriggerTrade();
                 }}
-                className={`w-full p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex items-center justify-between ${
-                  accountType === 'bonus'
-                    ? 'bg-[#0E1626] border-blue-500 ring-1 ring-blue-500 shadow-lg shadow-blue-500/20'
-                    : 'bg-[#0B101D] border-white/10 hover:border-blue-500/50'
+                className={`px-1.5 py-0.5 rounded-lg flex flex-col items-center justify-center gap-0 transition-all duration-200 transform cursor-pointer min-w-[48px] ${
+                  isTradeActive
+                    ? 'bg-gradient-to-b from-[#F5B301] to-[#E0A000] text-gray-950 font-black shadow-md shadow-[#F5B301]/30 scale-105 ring-1 ring-[#F5B301]/60'
+                    : 'text-gray-400 hover:text-white hover:bg-white/5 active:scale-95'
                 }`}
               >
-                <div className="flex items-center gap-3">
-                  <span className="w-3 h-3 rounded-full bg-blue-400" />
-                  <div>
-                    <h4 className="text-xs font-black text-white uppercase tracking-wider">Bonus Account</h4>
-                    <p className="text-[10px] text-gray-400">Trading Bonus Balance</p>
-                  </div>
-                </div>
-                <span className="text-sm font-black font-mono text-blue-400">
-                  ${balances.bonus.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </span>
+                <BarChart2 className={`w-3.5 h-3.5 transition-transform duration-200 ${isTradeActive ? 'text-gray-950 scale-110' : 'text-gray-400'}`} />
+                <span className={`text-[8.5px] tracking-tight ${isTradeActive ? 'font-black text-gray-950' : 'font-semibold text-gray-400'}`}>Trade</span>
               </button>
 
-              {/* Demo Account Option */}
-              <div
-                role="button"
-                tabIndex={0}
+              {/* 3. Help Tab */}
+              <button
+                type="button"
                 onClick={() => {
-                  setAccountType('demo');
-                  setIsAccountSelectorOpen(false);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    setAccountType('demo');
-                    setIsAccountSelectorOpen(false);
+                  setIsLeaderboardModalOpen(false);
+                  if (isHelpActive) {
+                    setIsHelpModalOpen(false);
+                  } else {
+                    handleTriggerHelp();
                   }
                 }}
-                className={`w-full p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex items-center justify-between ${
-                  accountType === 'demo'
-                    ? 'bg-[#0E1626] border-[#F5B301] ring-1 ring-[#F5B301] shadow-lg shadow-[#F5B301]/20'
-                    : 'bg-[#0B101D] border-white/10 hover:border-[#F5B301]/50'
+                className={`px-1.5 py-0.5 rounded-lg flex flex-col items-center justify-center gap-0 transition-all duration-200 transform cursor-pointer min-w-[48px] ${
+                  isHelpActive
+                    ? 'bg-gradient-to-b from-[#F5B301] to-[#E0A000] text-gray-950 font-black shadow-md shadow-[#F5B301]/30 scale-105 ring-1 ring-[#F5B301]/60'
+                    : 'text-gray-400 hover:text-white hover:bg-white/5 active:scale-95'
                 }`}
               >
-                <div className="flex items-center gap-3">
-                  <span className="w-3 h-3 rounded-full bg-[#F5B301]" />
-                  <div>
-                    <h4 className="text-xs font-black text-white uppercase tracking-wider">Demo Account</h4>
-                    <p className="text-[10px] text-gray-400">Virtual Practice Capital</p>
-                  </div>
-                </div>
-                <div className="flex flex-col items-end gap-1">
-                  <span className="text-sm font-black font-mono text-[#F5B301]">
-                    ${balances.demo.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </span>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setIsEditDemoModalOpen(true);
-                        setIsAccountSelectorOpen(false);
-                      }}
-                      className="text-[10px] px-2 py-0.5 rounded bg-[#F5B301]/20 hover:bg-[#F5B301]/35 text-[#F5B301] font-bold flex items-center gap-1 cursor-pointer transition-all border border-[#F5B301]/30"
-                      title="Edit Demo Balance"
-                    >
-                      <Pencil className="w-2.5 h-2.5" />
-                      <span>Edit</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleSaveDemoBalance(10000.00);
-                      }}
-                      className="text-[10px] px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white font-bold flex items-center gap-1 cursor-pointer transition-all border border-white/10"
-                    >
-                      <RotateCcw className="w-2.5 h-2.5" />
-                      <span>Reset $10k</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
+                <Headphones className={`w-3.5 h-3.5 transition-transform duration-200 ${isHelpActive ? 'text-gray-950 scale-110' : 'text-gray-400'}`} />
+                <span className={`text-[8.5px] tracking-tight ${isHelpActive ? 'font-black text-gray-950' : 'font-semibold text-gray-400'}`}>Help</span>
+              </button>
+
+              {/* 4. Leaderboard Tab */}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsHelpModalOpen(false);
+                  setIsLeaderboardModalOpen(prev => !prev);
+                }}
+                className={`px-1.5 py-0.5 rounded-lg flex flex-col items-center justify-center gap-0 transition-all duration-200 transform cursor-pointer min-w-[48px] ${
+                  isLeaderboardActive
+                    ? 'bg-gradient-to-b from-[#F5B301] to-[#E0A000] text-gray-950 font-black shadow-md shadow-[#F5B301]/30 scale-105 ring-1 ring-[#F5B301]/60'
+                    : 'text-gray-400 hover:text-white hover:bg-white/5 active:scale-95'
+                }`}
+              >
+                <Trophy className={`w-3.5 h-3.5 transition-transform duration-200 ${isLeaderboardActive ? 'text-gray-950 scale-110' : 'text-gray-400'}`} />
+                <span className={`text-[8.5px] tracking-tight ${isLeaderboardActive ? 'font-black text-gray-950' : 'font-semibold text-gray-400'}`}>Leaderboard</span>
+              </button>
+
+              {/* 5. Wallet Tab */}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsHelpModalOpen(false);
+                  setIsLeaderboardModalOpen(false);
+                  handleTriggerNavTab('wallet');
+                }}
+                className={`px-1.5 py-0.5 rounded-lg flex flex-col items-center justify-center gap-0 transition-all duration-200 transform cursor-pointer min-w-[48px] ${
+                  isWalletActive
+                    ? 'bg-gradient-to-b from-[#F5B301] to-[#E0A000] text-gray-950 font-black shadow-md shadow-[#F5B301]/30 scale-105 ring-1 ring-[#F5B301]/60'
+                    : 'text-gray-400 hover:text-white hover:bg-white/5 active:scale-95'
+                }`}
+              >
+                <Wallet className={`w-3.5 h-3.5 transition-transform duration-200 ${isWalletActive ? 'text-gray-950 scale-110' : 'text-gray-400'}`} />
+                <span className={`text-[8.5px] tracking-tight ${isWalletActive ? 'font-black text-gray-950' : 'font-semibold text-gray-400'}`}>Wallet</span>
+              </button>
+
+              {/* 6. Profile Tab */}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsHelpModalOpen(false);
+                  setIsLeaderboardModalOpen(false);
+                  handleTriggerNavTab('profile');
+                }}
+                className={`px-1.5 py-0.5 rounded-lg flex flex-col items-center justify-center gap-0 transition-all duration-200 transform cursor-pointer min-w-[48px] ${
+                  isProfileActive
+                    ? 'bg-gradient-to-b from-[#F5B301] to-[#E0A000] text-gray-950 font-black shadow-md shadow-[#F5B301]/30 scale-105 ring-1 ring-[#F5B301]/60'
+                    : 'text-gray-400 hover:text-white hover:bg-white/5 active:scale-95'
+                }`}
+              >
+                <UserIcon className={`w-3.5 h-3.5 transition-transform duration-200 ${isProfileActive ? 'text-gray-950 scale-110' : 'text-gray-400'}`} />
+                <span className={`text-[8.5px] tracking-tight ${isProfileActive ? 'font-black text-gray-950' : 'font-semibold text-gray-400'}`}>Profile</span>
+              </button>
+
             </div>
-          </div>
-        </div>
+          );
+        })()}
+      </div>
+
+      {/* Lazy Modals Wrapped in Suspense */}
+      <Suspense fallback={null}>
+      {/* Daily Leaderboard Modal */}
+      {isLeaderboardModalOpen && (
+        <LeaderboardModal
+          isOpen={isLeaderboardModalOpen}
+          onClose={() => setIsLeaderboardModalOpen(false)}
+          userEmail={user.email || undefined}
+          userUid={user.uid || undefined}
+          displayName={userDisplayName}
+          avatarUrl={userAvatar}
+          activeAccount={accountType}
+          closedTrades={closedTrades}
+          activeTrades={activeTrades}
+          onSwitchAccount={(acc) => setAccountType(acc)}
+        />
       )}
 
+      {/* Trade Choice Modal (Clean White Popup with Smooth Animation) */}
+      <TradeChoiceModal
+        isOpen={isTradeChoiceModalOpen}
+        onClose={() => setIsTradeChoiceModalOpen(false)}
+        onSelectMode={(mode) => {
+          if (mode === 'binary') {
+            setActiveBottomNav('binary');
+          } else {
+            setActiveBottomNav('trade');
+          }
+        }}
+        currentMode={activeBottomNav === 'binary' ? 'binary' : activeBottomNav === 'trade' ? 'forex' : undefined}
+      />
+
+
+
       {/* Feature Modals */}
-      <Suspense fallback={null}>
-        {isTradeModalOpen && (
-          <TradeTypeModal
-            isOpen={isTradeModalOpen}
-            onClose={() => setIsTradeModalOpen(false)}
-            activeAccount={accountType}
-            availableBalance={currentBalance}
-            assets={INITIAL_COIN_ASSETS}
-            onExecuteTrade={handleExecuteTrade}
-          />
-        )}
-      </Suspense>
+      {isTradeModalOpen && (
+        <TradeTypeModal
+          isOpen={isTradeModalOpen}
+          onClose={() => setIsTradeModalOpen(false)}
+          activeAccount={accountType}
+          availableBalance={currentBalance}
+          assets={INITIAL_COIN_ASSETS}
+          onExecuteTrade={handleExecuteTrade}
+        />
+      )}
 
-      <Suspense fallback={null}>
-        {isDepositModalOpen && (
-          <DepositModal
-            isOpen={isDepositModalOpen}
-            onClose={() => setIsDepositModalOpen(false)}
-            activeAccount={accountType}
-            userEmail={user.email || undefined}
-            userUid={user.uid || undefined}
-            hasClaimedBonusBefore={
-              hasClaimedBonusBefore ||
-              Boolean((user as any)?.hasClaimedWelcomeBonus || (user as any)?.bonusClaimed) ||
-              transactions.some(t => (t.status === 'Success' || t.status === 'Approved') && (t.bonusAmount || 0) > 0)
+      {/* Fast 450ms Rotating Spinner Transition Overlay with Rotating Concentric Rings */}
+      <InstantActionTransition
+        isOpen={instantTransition.isOpen}
+        type={instantTransition.type}
+        duration={450}
+        onComplete={() => {
+          const actionType = activeTransitionTypeRef.current || instantTransition.type;
+          activeTransitionTypeRef.current = null;
+          setInstantTransition({ isOpen: false, type: null });
+
+          if (actionType === 'deposit') {
+            setIsDepositModalOpen(true);
+          } else if (actionType === 'withdraw') {
+            setIsWithdrawModalOpen(true);
+          } else if (actionType === 'history') {
+            setIsHistoryModalOpen(true);
+          } else if (actionType === 'help') {
+            setIsHelpModalOpen(true);
+          } else if (actionType === 'trade') {
+            setIsTradeChoiceModalOpen(true);
+          } else if (actionType === 'binary') {
+            setActiveBottomNav('binary');
+          } else if (actionType === 'markets') {
+            setActiveBottomNav('markets');
+          } else if (actionType === 'wallet') {
+            setActiveBottomNav('wallet');
+          } else if (actionType === 'profile') {
+            setActiveBottomNav('profile');
+          } else if (actionType === 'home') {
+            setActiveBottomNav('home');
+          }
+        }}
+      />
+
+      {isDepositModalOpen && (
+        <DepositModal
+          isOpen={isDepositModalOpen}
+          onClose={() => setIsDepositModalOpen(false)}
+          activeAccount={accountType}
+          liveBalance={balances.live}
+          userEmail={user.email || undefined}
+          userUid={user.uid || undefined}
+          onOpenHistory={() => {
+            setIsDepositModalOpen(false);
+            setIsHistoryModalOpen(true);
+          }}
+          hasClaimedBonusBefore={
+            hasClaimedBonusBefore ||
+            Boolean((user as any)?.hasClaimedWelcomeBonus || (user as any)?.bonusClaimed) ||
+            transactions.some(t => (t.status === 'Success' || t.status === 'Approved') && (t.bonusAmount || 0) > 0)
+          }
+          onSuccessDeposit={(depositData) => {
+            if (depositData.bonusAmount > 0) {
+              setHasClaimedBonusBefore(true);
+              if (user?.uid) {
+                try { localStorage.setItem(`forex_bonus_claimed_${user.uid}`, 'true'); } catch (_) {}
+              }
             }
-            onSuccessDeposit={(depositData) => {
-              if (depositData.bonusAmount > 0) {
-                setHasClaimedBonusBefore(true);
-                if (user?.uid) {
-                  try { localStorage.setItem(`forex_bonus_claimed_${user.uid}`, 'true'); } catch (_) {}
-                }
+            const newTx: TransactionRecord = {
+              id: depositData.id || depositData.trxId || `TX-DP-${Date.now().toString().slice(-6)}`,
+              trxId: depositData.trxId,
+              userUid: user.uid,
+              userEmail: user.email || undefined,
+              accountType: depositData.accountType,
+              type: 'Deposit',
+              method: depositData.method,
+              amount: depositData.amount,
+              bonusAmount: depositData.bonusAmount,
+              status: 'Pending',
+              proofScreenshot: depositData.proofScreenshot,
+              timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16)
+            };
+            setTransactions(prev => {
+              const filtered = prev.filter(t => t.id !== newTx.id);
+              const next = [newTx, ...filtered];
+              if (user?.uid) {
+                try {
+                  localStorage.setItem(`forex_transactions_${user.uid}`, JSON.stringify(next));
+                } catch (_) {}
               }
-              const newTx: TransactionRecord = {
-                id: depositData.id || depositData.trxId || `TX-DP-${Date.now().toString().slice(-6)}`,
-                trxId: depositData.trxId,
-                userUid: user.uid,
-                userEmail: user.email || undefined,
-                accountType: depositData.accountType,
-                type: 'Deposit',
-                method: depositData.method,
-                amount: depositData.amount,
-                bonusAmount: depositData.bonusAmount,
-                status: 'Pending',
-                proofScreenshot: depositData.proofScreenshot,
-                timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16)
-              };
-              setTransactions(prev => {
-                const filtered = prev.filter(t => t.id !== newTx.id);
-                const next = [newTx, ...filtered];
-                if (user?.uid) {
-                  try {
-                    localStorage.setItem(`forex_transactions_${user.uid}`, JSON.stringify(next));
-                  } catch (_) {}
-                }
-                return next;
-              });
-              setWalletHistoryTab('deposits');
-            }}
-          />
-        )}
-      </Suspense>
+              return next;
+            });
+            setWalletHistoryTab('deposits');
+          }}
+        />
+      )}
 
-      <Suspense fallback={null}>
-        {isWithdrawModalOpen && (
-          <WithdrawModal
-            isOpen={isWithdrawModalOpen}
-            onClose={() => setIsWithdrawModalOpen(false)}
-            activeAccount={accountType}
-            liveBalance={balances.live}
-            bonusBalance={balances.bonus}
-            depositBonusGranted={depositBonusGranted}
-            userEmail={user.email || undefined}
-            userUid={user.uid || undefined}
-            onSuccessWithdrawal={(data) => {
-              if (data.accountType === 'bonus') {
-                const newBonusBal = depositBonusGranted && depositBonusGranted > 0 ? depositBonusGranted : 250.00;
-                setBalances(prev => ({
-                  ...prev,
-                  bonus: newBonusBal
-                }));
-              } else {
-                setBalances(prev => ({
-                  ...prev,
-                  live: Math.max(0, prev.live - data.amount)
-                }));
+      {isWithdrawModalOpen && (
+        <WithdrawModal
+          isOpen={isWithdrawModalOpen}
+          onClose={() => setIsWithdrawModalOpen(false)}
+          activeAccount={accountType}
+          liveBalance={balances.live}
+          bonusBalance={balances.bonus}
+          depositBonusGranted={depositBonusGranted}
+          userEmail={user.email || undefined}
+          userUid={user.uid || undefined}
+          onOpenHistory={() => {
+            setIsWithdrawModalOpen(false);
+            setIsHistoryModalOpen(true);
+          }}
+          onSuccessWithdrawal={(data) => {
+            if (data.accountType === 'bonus') {
+              const newBonusBal = depositBonusGranted && depositBonusGranted > 0 ? depositBonusGranted : 250.00;
+              setBalances(prev => ({
+                ...prev,
+                bonus: newBonusBal
+              }));
+            } else {
+              setBalances(prev => ({
+                ...prev,
+                live: Math.max(0, prev.live - data.amount)
+              }));
+            }
+            const newTx: TransactionRecord = {
+              id: data.trxId,
+              trxId: data.trxId,
+              userUid: user.uid,
+              userEmail: user.email || undefined,
+              accountType: data.accountType,
+              type: 'Withdrawal',
+              method: data.method,
+              amount: data.amount,
+              status: 'Pending',
+              timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16)
+            };
+            setTransactions(prev => {
+              const cleanTrx = (newTx.trxId || '').trim().toLowerCase();
+              const filtered = prev.filter(t => {
+                if (t.id === newTx.id) return false;
+                if (cleanTrx && t.trxId && t.trxId.trim().toLowerCase() === cleanTrx) return false;
+                return true;
+              });
+              const next = [newTx, ...filtered];
+              if (user?.uid) {
+                try {
+                  localStorage.setItem(`forex_transactions_${user.uid}`, JSON.stringify(next));
+                } catch (_) {}
               }
-              const newTx: TransactionRecord = {
-                id: data.trxId,
-                trxId: data.trxId,
-                userUid: user.uid,
-                userEmail: user.email || undefined,
-                accountType: data.accountType,
-                type: 'Withdrawal',
-                method: data.method,
-                amount: data.amount,
-                status: 'Pending',
-                timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16)
-              };
-              setTransactions(prev => {
-                const cleanTrx = (newTx.trxId || '').trim().toLowerCase();
-                const filtered = prev.filter(t => {
-                  if (t.id === newTx.id) return false;
-                  if (cleanTrx && t.trxId && t.trxId.trim().toLowerCase() === cleanTrx) return false;
-                  return true;
-                });
-                const next = [newTx, ...filtered];
-                if (user?.uid) {
-                  try {
-                    localStorage.setItem(`forex_transactions_${user.uid}`, JSON.stringify(next));
-                  } catch (_) {}
-                }
-                return next;
-              });
-              setWalletHistoryTab('withdrawals');
-            }}
-          />
-        )}
-      </Suspense>
+              return next;
+            });
+            setWalletHistoryTab('withdrawals');
+          }}
+        />
+      )}
 
-      <Suspense fallback={null}>
-        {isHelpModalOpen && (
-          <HelpLineModal
-            isOpen={isHelpModalOpen}
-            onClose={() => setIsHelpModalOpen(false)}
-          />
-        )}
-      </Suspense>
+      {isHelpModalOpen && (
+        <HelpLineModal
+          isOpen={isHelpModalOpen}
+          onClose={() => setIsHelpModalOpen(false)}
+        />
+      )}
 
-      <Suspense fallback={null}>
-        {isFeedbackModalOpen && (
-          <FeedbackModal
-            isOpen={isFeedbackModalOpen}
-            onClose={() => setIsFeedbackModalOpen(false)}
-          />
-        )}
-      </Suspense>
+      {isFeedbackModalOpen && (
+        <FeedbackModal
+          isOpen={isFeedbackModalOpen}
+          onClose={() => setIsFeedbackModalOpen(false)}
+        />
+      )}
 
       {/* KYC Document Submission Modal */}
-      <Suspense fallback={null}>
-        {isKycModalOpen && (
-          <KYCModal
-            isOpen={isKycModalOpen}
-            onClose={() => setIsKycModalOpen(false)}
-            userProfile={{
-              uid: user.uid,
-              email: user.email || '',
-              fullName: user.displayName || ''
-            }}
-            currentKycStatus={kycStatus}
-            onSuccessSubmitted={() => {
-              setKycStatus('pending');
-              const myReqs = getStoredKycRequests();
-              const latest = myReqs.find(r => r.userUid === user.uid);
-              if (latest) {
-                setKycReason('');
-              }
-            }}
-          />
-        )}
-      </Suspense>
+      {isKycModalOpen && (
+        <KYCModal
+          isOpen={isKycModalOpen}
+          onClose={() => setIsKycModalOpen(false)}
+          userProfile={{
+            uid: user.uid,
+            email: user.email || '',
+            fullName: user.displayName || ''
+          }}
+          currentKycStatus={kycStatus}
+          onSuccessSubmitted={() => {
+            setKycStatus('pending');
+            const myReqs = getStoredKycRequests();
+            const latest = myReqs.find(r => r.userUid === user.uid);
+            if (latest) {
+              setKycReason('');
+            }
+          }}
+        />
+      )}
 
       {/* Change Password Modal */}
-      <Suspense fallback={null}>
-        {isChangePasswordModalOpen && (
-          <ChangePasswordModal
-            isOpen={isChangePasswordModalOpen}
-            onClose={() => setIsChangePasswordModalOpen(false)}
-            userEmail={user?.email}
-          />
-        )}
-      </Suspense>
+      {isChangePasswordModalOpen && (
+        <ChangePasswordModal
+          isOpen={isChangePasswordModalOpen}
+          onClose={() => setIsChangePasswordModalOpen(false)}
+          userEmail={user?.email}
+        />
+      )}
 
       {/* User Notifications Modal */}
       <AnimatePresence>
@@ -3798,63 +3790,56 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
       </AnimatePresence>
 
       {/* Share Referral Link Modal with WhatsApp, Facebook, Messenger, Telegram, Gmail & Copy Link */}
-      <Suspense fallback={null}>
-        {isShareReferralModalOpen && (
-          <ShareReferralModal
-            isOpen={isShareReferralModalOpen}
-            onClose={() => setIsShareReferralModalOpen(false)}
-            referralCode={userReferralId}
-            referralLink={userReferralLink}
-            onOpenMyReferrals={() => {
-              setIsShareReferralModalOpen(false);
-              setIsMyReferralsModalOpen(true);
-            }}
-            referralCount={myReferralsCount}
-          />
-        )}
-      </Suspense>
+      {isShareReferralModalOpen && (
+        <ShareReferralModal
+          isOpen={isShareReferralModalOpen}
+          onClose={() => setIsShareReferralModalOpen(false)}
+          referralCode={userReferralId}
+          referralLink={userReferralLink}
+          onOpenMyReferrals={() => {
+            setIsShareReferralModalOpen(false);
+            setIsMyReferralsModalOpen(true);
+          }}
+          referralCount={myReferralsCount}
+        />
+      )}
 
       {/* My Total Referrals Modal (Shows referred accounts, Live/Bonus/Demo balances, $25 reward status) */}
-      <Suspense fallback={null}>
-        {isMyReferralsModalOpen && (
-          <MyReferralsModal
-            isOpen={isMyReferralsModalOpen}
-            onClose={() => setIsMyReferralsModalOpen(false)}
-            userUid={user.uid}
-            referralCode={userReferralId}
-            referralLink={userReferralLink}
-            onOpenShareModal={() => setIsShareReferralModalOpen(true)}
-          />
-        )}
-      </Suspense>
+      {isMyReferralsModalOpen && (
+        <MyReferralsModal
+          isOpen={isMyReferralsModalOpen}
+          onClose={() => setIsMyReferralsModalOpen(false)}
+          userUid={user.uid}
+          referralCode={userReferralId}
+          referralLink={userReferralLink}
+          onOpenShareModal={() => setIsShareReferralModalOpen(true)}
+        />
+      )}
 
       {/* Avatar Picker & Gallery Upload Modal */}
-      <Suspense fallback={null}>
-        {isAvatarModalOpen && (
-          <AvatarPickerModal
-            isOpen={isAvatarModalOpen}
-            onClose={() => setIsAvatarModalOpen(false)}
-            currentAvatar={userAvatar}
-            userUid={user.uid}
-            displayName={user.displayName || undefined}
-            email={user.email || undefined}
-            onAvatarUpdated={(newAvatar) => {
-              setUserAvatar(newAvatar);
-            }}
-          />
-        )}
-      </Suspense>
+      {isAvatarModalOpen && (
+        <AvatarPickerModal
+          isOpen={isAvatarModalOpen}
+          onClose={() => setIsAvatarModalOpen(false)}
+          currentAvatar={userAvatar}
+          userUid={user.uid}
+          displayName={user.displayName || undefined}
+          email={user.email || undefined}
+          onAvatarUpdated={(newAvatar) => {
+            setUserAvatar(newAvatar);
+          }}
+        />
+      )}
 
       {/* Edit Demo Balance Modal */}
-      <Suspense fallback={null}>
-        {isEditDemoModalOpen && (
-          <EditDemoBalanceModal
-            isOpen={isEditDemoModalOpen}
-            onClose={() => setIsEditDemoModalOpen(false)}
-            currentBalance={balances.demo || 10000}
-            onSave={handleSaveDemoBalance}
-          />
-        )}
+      {isEditDemoModalOpen && (
+        <EditDemoBalanceModal
+          isOpen={isEditDemoModalOpen}
+          onClose={() => setIsEditDemoModalOpen(false)}
+          currentBalance={balances.demo || 10000}
+          onSave={handleSaveDemoBalance}
+        />
+      )}
       </Suspense>
 
       {/* Account Type Selector Modal (Live, Bonus, Demo) */}

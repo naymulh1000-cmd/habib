@@ -11,6 +11,7 @@ import { db, isQuotaExceeded } from './firebase';
 import { getStoredUsersCache, saveStoredUsersCache } from './adminSync';
 import { getDisplayUserId, UserProfileData } from './firestoreSync';
 import { safeIsoString } from './dateUtils';
+import { safeFetch } from './safeApi';
 
 export interface SyncUserDataPayload {
   uid: string;
@@ -176,27 +177,7 @@ export async function syncUserRegistrationEverywhere(payload: SyncUserDataPayloa
     }
   } catch (_) {}
 
-  // 3. Post to Server Backend (`/api/users/register`)
-  try {
-    await fetch('/api/users/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...fullRecord,
-        liveBalance: live,
-        bonusBalance: bonus,
-        demoBalance: demo,
-        referralCode: payload.referralCode || null,
-        referrerUid: payload.referrerUid || null,
-        referredBy: payload.referredBy || null,
-        createdAt: fullRecord.createdAt,
-      }),
-    }).catch(err => {
-      console.warn('[userSyncHelper] Server sync fetch notice:', err);
-    });
-  } catch (_) {}
-
-  // 4. Firestore Document Write (`setDoc` with merge)
+  // 3. Firestore Document Write (`setDoc` with merge) - Primary Persistence
   try {
     if (!isQuotaExceeded()) {
       const userDocRef = doc(db, 'users', uid);
@@ -226,4 +207,22 @@ export async function syncUserRegistrationEverywhere(payload: SyncUserDataPayloa
   } catch (firestoreErr) {
     console.warn('[userSyncHelper] Firestore write notice:', firestoreErr);
   }
+
+  // 4. Non-blocking Post to Server Backend (`/api/users/register` with 600ms timeout guard)
+  try {
+    safeFetch('/api/users/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...fullRecord,
+        liveBalance: live,
+        bonusBalance: bonus,
+        demoBalance: demo,
+        referralCode: payload.referralCode || null,
+        referrerUid: payload.referrerUid || null,
+        referredBy: payload.referredBy || null,
+        createdAt: fullRecord.createdAt,
+      }),
+    }, 600).catch(() => {});
+  } catch (_) {}
 }

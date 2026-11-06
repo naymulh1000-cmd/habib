@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { db, isQuotaExceeded, isQuotaError } from './firebase';
 import { collection, doc, setDoc, deleteDoc, onSnapshot, query, orderBy, limit } from 'firebase/firestore';
+import { safeFetch, safeFetchJson } from './safeApi';
 
 export interface BroadcastSignal {
   id: string;
@@ -107,14 +108,12 @@ export async function sendBroadcastSignal(
     } catch (_) {}
   }
 
-  // 2. Persist to Express backend
-  try {
-    fetch('/api/broadcasts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newSignal)
-    }).catch(() => {});
-  } catch (_) {}
+  // 2. Persist to Express backend non-blocking with 600ms abort guard
+  safeFetch('/api/broadcasts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(newSignal)
+  }, 600).catch(() => {});
 
   // 3. Persist to Firestore collection `broadcasts`
   if (!isQuotaExceeded()) {
@@ -145,9 +144,7 @@ export async function deleteBroadcastSignal(id: string): Promise<boolean> {
     } catch (_) {}
   }
 
-  try {
-    fetch(`/api/broadcasts/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
-  } catch (_) {}
+  safeFetch(`/api/broadcasts/${encodeURIComponent(id)}`, { method: 'DELETE' }, 600).catch(() => {});
 
   if (!isQuotaExceeded()) {
     try {
@@ -189,30 +186,23 @@ export function subscribeToBroadcasts(onUpdate: (signals: BroadcastSignal[]) => 
     window.addEventListener('forex_broadcasts_updated', handleCustomEvent);
   }
 
-  // Polling to Express server every 4 seconds
-  const pollTimer = setInterval(async () => {
-    try {
-      const res = await fetch('/api/broadcasts');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.broadcasts) && data.broadcasts.length > 0) {
-          saveStoredBroadcasts(data.broadcasts);
-          onUpdate(data.broadcasts);
-        }
+  // Initial fetch on mount with safe 800ms abort guard
+  safeFetchJson<{ broadcasts: BroadcastSignal[] }>('/api/broadcasts', 800)
+    .then(data => {
+      if (data && Array.isArray(data.broadcasts) && data.broadcasts.length > 0) {
+        saveStoredBroadcasts(data.broadcasts);
+        onUpdate(data.broadcasts);
       }
-    } catch (_) {}
-  }, 4000);
+    })
+    .catch(() => {});
 
-  // Focus refresh
+  // Focus refresh with safe 800ms abort guard
   const handleFocus = async () => {
     try {
-      const res = await fetch('/api/broadcasts');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.broadcasts) && data.broadcasts.length > 0) {
-          saveStoredBroadcasts(data.broadcasts);
-          onUpdate(data.broadcasts);
-        }
+      const data = await safeFetchJson<{ broadcasts: BroadcastSignal[] }>('/api/broadcasts', 800);
+      if (data && Array.isArray(data.broadcasts) && data.broadcasts.length > 0) {
+        saveStoredBroadcasts(data.broadcasts);
+        onUpdate(data.broadcasts);
       }
     } catch (_) {}
   };
@@ -261,7 +251,6 @@ export function subscribeToBroadcasts(onUpdate: (signals: BroadcastSignal[]) => 
   }
 
   return () => {
-    clearInterval(pollTimer);
     const channel = getBroadcastChannel();
     if (channel) {
       channel.removeEventListener('message', handleBroadcast);

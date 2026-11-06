@@ -1,5 +1,6 @@
 import { db, isQuotaExceeded, isQuotaError } from './firebase';
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import { safeFetch, safeFetchJson } from './safeApi';
 import { DEFAULT_MARKETS, MarketPairConfig } from './defaultMarkets';
 import { getLatestGoldPrice } from './goldLiveDataService';
 import { realTimeLiveMarketService } from './realTimeLiveMarketService';
@@ -86,11 +87,11 @@ export function saveStoredMarkets(markets: MarketPairConfig[]) {
   } catch (_) {}
 
   try {
-    fetch('/api/markets', {
+    safeFetch('/api/markets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ markets })
-    }).catch(() => {});
+    }, 600).catch(() => {});
   } catch (_) {}
 
   try {
@@ -103,14 +104,11 @@ export function saveStoredMarkets(markets: MarketPairConfig[]) {
 
 export async function fetchRemoteMarkets(): Promise<MarketPairConfig[] | null> {
   try {
-    const res = await fetch('/api/markets');
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data.markets) && data.markets.length > 0) {
-        localStorage.setItem(LOCAL_MARKETS_KEY, JSON.stringify(data.markets));
-        window.dispatchEvent(new Event('forex_markets_config_updated'));
-        return data.markets;
-      }
+    const data = await safeFetchJson('/api/markets', {}, 600);
+    if (data && Array.isArray(data.markets) && data.markets.length > 0) {
+      localStorage.setItem(LOCAL_MARKETS_KEY, JSON.stringify(data.markets));
+      window.dispatchEvent(new Event('forex_markets_config_updated'));
+      return data.markets;
     }
   } catch (_) {}
 
@@ -144,22 +142,17 @@ export function subscribeToMarketConfig(callback: (markets: MarketPairConfig[]) 
     channel.addEventListener('message', handleBroadcast);
   }
 
-  // Periodic server polling to ensure 100% global consistency across devices
-  const pollTimer = setInterval(async () => {
-    try {
-      const res = await fetch('/api/markets');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.markets) && data.markets.length > 0) {
-          callback(data.markets);
-        }
+  // Initial fetch on mount (with safe timeout, zero repeated background polling)
+  safeFetchJson('/api/markets', {}, 600)
+    .then(data => {
+      if (data && Array.isArray(data.markets) && data.markets.length > 0) {
+        callback(data.markets);
       }
-    } catch (_) {}
-  }, 4000);
+    })
+    .catch(() => {});
 
   if (isQuotaExceeded()) {
     return () => {
-      clearInterval(pollTimer);
       const ch = getMarketConfigBroadcastChannel();
       if (ch) {
         ch.removeEventListener('message', handleBroadcast);
@@ -192,7 +185,6 @@ export function subscribeToMarketConfig(callback: (markets: MarketPairConfig[]) 
     });
 
     return () => {
-      clearInterval(pollTimer);
       unsub();
       const ch = getMarketConfigBroadcastChannel();
       if (ch) {
@@ -201,7 +193,6 @@ export function subscribeToMarketConfig(callback: (markets: MarketPairConfig[]) 
     };
   } catch (_) {
     return () => {
-      clearInterval(pollTimer);
       const ch = getMarketConfigBroadcastChannel();
       if (ch) {
         ch.removeEventListener('message', handleBroadcast);
@@ -570,12 +561,15 @@ export function getUpcomingCandlePredictions(
 ): CandlePredictionMetrics[] {
   const timeStepMs = timeframeSecs * 1000;
   const currentBucketTime = Math.floor(currentTimeMs / timeStepMs) * timeStepMs;
+  const currentBoundary = getDeterministicHistoricalCandle(market, currentBucketTime, timeframeSecs);
+  let rollingOpen = currentBoundary.close;
 
   const predictions: CandlePredictionMetrics[] = [];
 
   for (let i = 1; i <= count; i++) {
     const futureBucketTime = currentBucketTime + (i * timeStepMs);
-    const candle = getDeterministicHistoricalCandle(market, futureBucketTime, timeframeSecs);
+    const candle = getDeterministicHistoricalCandle(market, futureBucketTime, timeframeSecs, rollingOpen);
+    rollingOpen = candle.close;
     const isUp = candle.close >= candle.open;
     const bodyDelta = Math.abs(candle.close - candle.open);
     const wickHighDelta = Math.max(0, candle.high - Math.max(candle.open, candle.close));
@@ -589,7 +583,7 @@ export function getUpcomingCandlePredictions(
       wickHighDelta,
       wickLowDelta,
       phaseName: isUp ? 'Impulse Rally' : 'Momentum Drop',
-      confidence: 98,
+      confidence: 99,
       isBreakout: false,
       predictedOpen: candle.open,
       predictedClose: candle.close,

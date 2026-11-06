@@ -64,62 +64,50 @@ export const MarketsView: React.FC<MarketsViewProps> = ({ onSelectMarket }) => {
     });
     setLivePrices(initialMap);
 
+    const pendingPrices: Record<string, number> = {};
+
     const unsubs = markets.map(m => {
       return customMarketEngine.subscribeToTicker(m.symbol, (ticker) => {
-        setLivePrices(prev => {
-          const old = prev[m.symbol]?.price ?? ticker.price;
-          const dir = ticker.price > old ? 'up' : ticker.price < old ? 'down' : (prev[m.symbol]?.dir || 'neutral');
-          return {
-            ...prev,
-            [m.symbol]: { price: ticker.price, dir }
-          };
-        });
+        pendingPrices[m.symbol] = ticker.price;
       });
     });
 
     const handleRealTick = (e: any) => {
       const tick = e.detail;
       if (!tick || !tick.symbol || !tick.price) return;
-      setLivePrices(prev => {
-        const old = prev[tick.symbol]?.price ?? tick.price;
-        const dir = tick.price > old ? 'up' : tick.price < old ? 'down' : (prev[tick.symbol]?.dir || 'neutral');
-        return {
-          ...prev,
-          [tick.symbol]: { price: tick.price, dir }
-        };
-      });
+      pendingPrices[tick.symbol] = tick.price;
     };
     window.addEventListener('real_live_market_tick', handleRealTick);
 
-    return () => {
-      unsubs.forEach(u => u());
-      window.removeEventListener('real_live_market_tick', handleRealTick);
-    };
-  }, [markets]);
+    // Single batched update every 600ms (keeps UI 100% fluid, eliminates render thrashing)
+    const flushInterval = setInterval(() => {
+      const keys = Object.keys(pendingPrices);
+      if (keys.length === 0) return;
 
-  // Periodic poll to ensure zero-lag price synchronization
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const now = Date.now();
       setLivePrices(prev => {
         let changed = false;
         const next = { ...prev };
-        markets.forEach(m => {
-          const current = (m.isRealMarket || m.category !== 'otc')
-            ? (realTimeLiveMarketService.getLatestPrice(m.symbol) || customMarketEngine.getCurrentPrice(m.symbol) || m.basePrice)
-            : (customMarketEngine.getCurrentPrice(m.symbol) || getSyncedMarketPrice(m, now));
-          const old = prev[m.symbol]?.price;
-          if (old === undefined || Math.abs(current - old) > 0.000001) {
-            const dir = old !== undefined ? (current > old ? 'up' : 'down') : 'neutral';
-            next[m.symbol] = { price: current, dir };
-            changed = true;
+        keys.forEach(sym => {
+          const newPrice = pendingPrices[sym];
+          delete pendingPrices[sym];
+          if (typeof newPrice === 'number') {
+            const old = prev[sym]?.price;
+            if (old === undefined || Math.abs(newPrice - old) > 0.000001) {
+              const dir = old !== undefined ? (newPrice > old ? 'up' : 'down') : 'neutral';
+              next[sym] = { price: newPrice, dir };
+              changed = true;
+            }
           }
         });
         return changed ? next : prev;
       });
-    }, 400);
+    }, 600);
 
-    return () => clearInterval(interval);
+    return () => {
+      unsubs.forEach(u => u());
+      window.removeEventListener('real_live_market_tick', handleRealTick);
+      clearInterval(flushInterval);
+    };
   }, [markets]);
 
   // Filtered market list

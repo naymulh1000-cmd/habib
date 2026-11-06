@@ -21,6 +21,7 @@ import {
 } from 'firebase/firestore';
 import { TransactionRecord, AccountType } from '../types';
 import { addStoredNotification } from './kycSync';
+import { safeFetch, safeFetchJson } from './safeApi';
 
 export const DEPOSIT_REQUESTS_KEY = 'forex_deposit_requests_v2';
 
@@ -28,7 +29,10 @@ export function getStoredLocalDeposits(): TransactionRecord[] {
   try {
     const raw = localStorage.getItem(DEPOSIT_REQUESTS_KEY);
     if (raw) {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
     }
   } catch (e) {
     console.warn('Failed to parse local deposit requests:', e);
@@ -38,11 +42,32 @@ export function getStoredLocalDeposits(): TransactionRecord[] {
 
 export function saveStoredLocalDeposits(deposits: TransactionRecord[]): void {
   try {
-    localStorage.setItem(DEPOSIT_REQUESTS_KEY, JSON.stringify(deposits));
+    // Strip heavy base64 proofScreenshot to keep localStorage lightning fast (<10KB) and eliminate main-thread freeze
+    const sanitized = (deposits || []).slice(0, 50).map(d => {
+      if (d && d.proofScreenshot && d.proofScreenshot.length > 200) {
+        const { proofScreenshot, ...rest } = d;
+        return rest;
+      }
+      return d;
+    });
+    localStorage.setItem(DEPOSIT_REQUESTS_KEY, JSON.stringify(sanitized));
   } catch (e) {
     console.warn('Failed to save local deposit requests:', e);
   }
 }
+
+// Immediate one-time cleanup of legacy bloated base64 screenshots in localStorage to unblock event loop
+try {
+  if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+    const raw = localStorage.getItem(DEPOSIT_REQUESTS_KEY);
+    if (raw && (raw.includes('data:image') || raw.length > 50000)) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        saveStoredLocalDeposits(parsed);
+      }
+    }
+  }
+} catch (_) {}
 
 /**
  * Utility to compress and resize an uploaded screenshot file before storing as base64 string.
@@ -256,7 +281,7 @@ export async function saveDepositRequestToFirestore(request: {
 
     // 4. Post to persistent Backend API in background if running (non-blocking)
     try {
-      fetch('/api/deposits', {
+      safeFetch('/api/deposits', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -273,13 +298,7 @@ export async function saveDepositRequestToFirestore(request: {
           proofScreenshot: depositDoc.proofScreenshot,
           createdAt: nowIso
         })
-      }).then(res => {
-        if (res.ok) return res.json();
-      }).then(data => {
-        if (data?.deposit) {
-          console.log(`[depositSync] ✅ Backend API acknowledged deposit:`, depositDoc.id);
-        }
-      }).catch(() => {});
+      }, 600).catch(() => {});
     } catch (apiErr) {
       console.warn('[depositSync] Backend API deposit POST note:', apiErr);
     }
@@ -369,12 +388,9 @@ export function subscribeAllDepositsFromFirestore(
   const fetchFromApi = async () => {
     if (isCleanedUp) return;
     try {
-      const res = await fetch('/api/deposits');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.deposits)) {
-          mergeDeposits(data.deposits);
-        }
+      const data = await safeFetchJson('/api/deposits', {}, 600);
+      if (data && Array.isArray(data.deposits)) {
+        mergeDeposits(data.deposits);
       }
     } catch (_) {}
   };
@@ -419,8 +435,8 @@ export function subscribeAllDepositsFromFirestore(
     });
   } catch (_) {}
 
-  // 2. Poll Backend API every 3 seconds as a reliable fallback
-  const pollInterval = setInterval(fetchFromApi, 3000);
+  // 2. Poll Backend API every 30 seconds as a reliable fallback
+  const pollInterval = setInterval(fetchFromApi, 30000);
 
   // 3. Listen to local BroadcastChannel for immediate notifications across tabs
   let bc: BroadcastChannel | null = null;
@@ -583,47 +599,54 @@ export function subscribeUserDepositsFromFirestore(
     } catch (_) {}
   };
 
-  // 2. Fetch from persistent backend API immediately and poll every 3.5s
+  // 2. Fetch from persistent backend API if running (guarded with safe timeout)
+  let isCleanedUp = false;
+  let isDepFetchInFlight = false;
+  let backendFailCount = 0;
   const fetchBackendDeposits = async () => {
+    if (isCleanedUp || backendFailCount >= 2 || isDepFetchInFlight) return;
+    isDepFetchInFlight = true;
     try {
       const url = `/api/deposits?userUid=${encodeURIComponent(cleanUid)}&userEmail=${encodeURIComponent(cleanEmail)}`;
-      const res = await fetch(url);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.deposits && Array.isArray(data.deposits)) {
-          const userDeps: TransactionRecord[] = data.deposits
-            .filter(isUserMatch)
-            .map((d: any) => ({
-              id: d.id,
-              userUid: d.userUid,
-              userEmail: d.userEmail,
-              userName: d.userName,
-              accountType: d.accountType || 'live',
-              type: 'Deposit',
-              method: d.method || 'Auto Gateway',
-              amount: Number(d.amount) || 0,
-              bonusAmount: Number(d.bonusAmount) || 0,
-              mainBalanceCredit: d.mainBalanceCredit !== undefined ? Number(d.mainBalanceCredit) : (d.accountType === 'live' ? Number(d.amount) || 0 : 0),
-              status: d.status || 'Pending',
-              timestamp: d.timestamp || 'Recently',
-              txHash: d.txHash || d.trxId || '',
-              trxId: d.trxId || d.txHash || '',
-              proofScreenshot: d.proofScreenshot || undefined,
-              rejectionReason: d.rejectionReason || undefined,
-              createdAt: d.createdAt,
-              approvedAt: d.approvedAt,
-              approvedBy: d.approvedBy
-            }));
-          emitUpdate(userDeps);
-        }
+      const data = await safeFetchJson(url, {}, 600);
+      if (data && data.deposits && Array.isArray(data.deposits)) {
+        backendFailCount = 0;
+        const userDeps: TransactionRecord[] = data.deposits
+          .filter(isUserMatch)
+          .map((d: any) => ({
+            id: d.id,
+            userUid: d.userUid,
+            userEmail: d.userEmail,
+            userName: d.userName,
+            accountType: d.accountType || 'live',
+            type: 'Deposit',
+            method: d.method || 'Auto Gateway',
+            amount: Number(d.amount) || 0,
+            bonusAmount: Number(d.bonusAmount) || 0,
+            mainBalanceCredit: d.mainBalanceCredit !== undefined ? Number(d.mainBalanceCredit) : (d.accountType === 'live' ? Number(d.amount) || 0 : 0),
+            status: d.status || 'Pending',
+            timestamp: d.timestamp || 'Recently',
+            txHash: d.txHash || d.trxId || '',
+            trxId: d.trxId || d.txHash || '',
+            proofScreenshot: d.proofScreenshot || undefined,
+            rejectionReason: d.rejectionReason || undefined,
+            createdAt: d.createdAt,
+            approvedAt: d.approvedAt,
+            approvedBy: d.approvedBy
+          }));
+        emitUpdate(userDeps);
+      } else {
+        backendFailCount++;
       }
-    } catch (err) {
-      console.warn('[depositSync] User deposits backend fetch note:', err);
+    } catch (_) {
+      backendFailCount++;
+    } finally {
+      isDepFetchInFlight = false;
     }
   };
 
   fetchBackendDeposits();
-  const pollInterval = setInterval(fetchBackendDeposits, 15000);
+  const pollInterval = setInterval(fetchBackendDeposits, 30000);
 
   // 3. BroadcastChannel listener for zero-latency multi-tab updates
   let bc: BroadcastChannel | null = null;
@@ -725,8 +748,7 @@ export function subscribeUserDepositsFromFirestore(
       if (cleanUid) {
         const qUid = query(collection(db, 'deposits'), where('userUid', '==', cleanUid), limit(50));
         unsubs.push(onSnapshot(qUid, handleSnapshot, () => {}));
-      }
-      if (cleanEmail) {
+      } else if (cleanEmail) {
         const qEmail = query(collection(db, 'deposits'), where('userEmail', '==', cleanEmail), limit(50));
         unsubs.push(onSnapshot(qEmail, handleSnapshot, () => {}));
       }
@@ -736,6 +758,7 @@ export function subscribeUserDepositsFromFirestore(
   }
 
   return () => {
+    isCleanedUp = true;
     clearInterval(pollInterval);
     if (bc) {
       bc.close();
@@ -791,12 +814,14 @@ export async function approveDepositInFirestore(
 
   // 2b. Call backend API for persistent balance credit & audit
   try {
-    fetch(`/api/deposits/${encodeURIComponent(depositId)}/approve`, {
+    await safeFetch(`/api/deposits/${encodeURIComponent(depositId)}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ approvedBy: approvedBy || 'Admin' })
-    }).catch(() => {});
-  } catch (_) {}
+    }, 4000);
+  } catch (apiErr) {
+    console.warn('[depositSync] Server approve note:', apiErr);
+  }
 
   // 2c. Broadcast status change across open tabs and windows
   try {
@@ -808,7 +833,9 @@ export async function approveDepositInFirestore(
         status: 'Success',
         approvedAt: new Date().toISOString(),
         userUid: deposit.userUid,
-        userEmail: deposit.userEmail
+        userEmail: deposit.userEmail,
+        amount,
+        bonusAmount
       });
       bc.close();
       window.dispatchEvent(new CustomEvent('forex_deposit_status_changed', { 
@@ -861,7 +888,7 @@ export async function approveDepositInFirestore(
   }
 
   // 6. Update User Balance in Firestore
-  let targetUserDocId = userUid && userUid !== 'anonymous' ? userUid : null;
+  let targetUserDocId = userUid && userUid !== 'anonymous' && userUid !== 'usr_guest' ? userUid : null;
 
   try {
     if (!targetUserDocId && deposit.userEmail) {
@@ -888,18 +915,23 @@ export async function approveDepositInFirestore(
         currentDemo = typeof uData.demoBalance === 'number' ? uData.demoBalance : (uData.balances?.demo ?? 10000);
       }
 
+      // Calculate 100% bonus if eligible (>= $250)
+      const effectiveBonus = bonusAmount > 0 ? bonusAmount : (deposit.claimBonus && amount >= 250 ? amount : 0);
       const isBonusWallet = deposit.accountType === 'bonus';
-      const newLive = isBonusWallet ? currentLive : (currentLive + amount);
-      const newBonus = isBonusWallet ? (currentBonus + amount + bonusAmount) : (currentBonus + bonusAmount);
+      const newLive = isBonusWallet ? currentLive : Number((currentLive + amount).toFixed(2));
+      const newBonus = isBonusWallet ? Number((currentBonus + amount + effectiveBonus).toFixed(2)) : Number((currentBonus + effectiveBonus).toFixed(2));
       const prevDepositBonusGranted = typeof uData?.depositBonusGranted === 'number' ? uData.depositBonusGranted : 0;
-      const newDepositBonusGranted = bonusAmount > 0 ? (prevDepositBonusGranted + bonusAmount) : (prevDepositBonusGranted > 0 ? prevDepositBonusGranted : (newBonus > 0 ? newBonus : 0));
-      const hasClaimedWelcomeBonus = Boolean(uData?.hasClaimedWelcomeBonus || uData?.bonusClaimed || bonusAmount > 0);
+      const newDepositBonusGranted = effectiveBonus > 0 ? (prevDepositBonusGranted + effectiveBonus) : (prevDepositBonusGranted > 0 ? prevDepositBonusGranted : 0);
+      const hasClaimedWelcomeBonus = Boolean(uData?.hasClaimedWelcomeBonus || uData?.bonusClaimed || effectiveBonus > 0);
       const referralCode = uData?.referrerUid || uData?.referralCode || uData?.referredBy;
+
+      const bonusTier = (deposit as any).bonusCategory || (amount < 500 ? 1 : (amount < 1000 ? 2 : 3));
 
       await setDoc(userRef, {
         liveBalance: newLive,
         bonusBalance: newBonus,
         depositBonusGranted: newDepositBonusGranted,
+        bonusCategory: bonusTier,
         hasClaimedWelcomeBonus: hasClaimedWelcomeBonus,
         bonusClaimed: hasClaimedWelcomeBonus,
         balances: {
@@ -910,7 +942,46 @@ export async function approveDepositInFirestore(
         updatedAt: serverTimestamp()
       }, { merge: true });
 
-      console.log(`[depositSync] 💰 Credited user ${targetUserDocId} in Firestore: live=$${newLive}, bonus=$${newBonus}`);
+      console.log(`[depositSync] 💰 Credited user ${targetUserDocId} in Firestore: live=$${newLive}, bonus=$${newBonus}, bonusGranted=$${newDepositBonusGranted}`);
+
+      // Sync local storage directly for active session
+      try {
+        localStorage.setItem(`forex_user_balances_${targetUserDocId}`, JSON.stringify({ live: newLive, bonus: newBonus, demo: currentDemo }));
+        localStorage.setItem(`forex_deposit_bonus_granted_${targetUserDocId}`, String(newDepositBonusGranted));
+      } catch (_) {}
+
+      // Broadcast instant balance update across tabs & components
+      try {
+        if (typeof window !== 'undefined') {
+          const bc = new BroadcastChannel('forex_admin_channel');
+          bc.postMessage({
+            type: 'DEPOSIT_APPROVED_BALANCE_UPDATED',
+            depositId,
+            userUid: targetUserDocId,
+            userEmail: deposit.userEmail,
+            amount,
+            bonusAmount: effectiveBonus,
+            depositBonusGranted: newDepositBonusGranted,
+            balances: {
+              live: newLive,
+              bonus: newBonus,
+              demo: currentDemo
+            }
+          });
+          bc.close();
+
+          window.dispatchEvent(new CustomEvent('forex_balance_updated', {
+            detail: {
+              userUid: targetUserDocId,
+              userEmail: deposit.userEmail,
+              live: newLive,
+              bonus: newBonus,
+              demo: currentDemo,
+              depositBonusGranted: newDepositBonusGranted
+            }
+          }));
+        }
+      } catch (_) {}
 
       // 7. Process $25 Referral Bonus to Referrer on First Successful Deposit (Min $250)
       const hasAlreadyReceivedReferralBonus = Boolean(uData?.referralBonusAwarded);
@@ -1061,13 +1132,13 @@ export async function rejectDepositInFirestore(
   const userUid = targetDeposit?.userUid || depositRecord?.userUid || local.find(d => d.id === depositId)?.userUid;
   const amount = targetDeposit?.amount || depositRecord?.amount || local.find(d => d.id === depositId)?.amount;
 
-  // 1b. Call backend API for persistence
+  // 1b. Call backend API for persistence (with timeout guard)
   try {
-    await fetch(`/api/deposits/${encodeURIComponent(depositId)}/reject`, {
+    safeFetch(`/api/deposits/${encodeURIComponent(depositId)}/reject`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason: finalReason, deposit: targetDeposit })
-    });
+    }, 600).catch(() => {});
   } catch (_) {}
 
   // 1c. Broadcast rejection status across open tabs and windows

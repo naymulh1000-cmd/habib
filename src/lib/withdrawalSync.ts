@@ -21,6 +21,7 @@ import { TransactionRecord, AccountType } from '../types';
 import { addStoredNotification } from './kycSync';
 import { cleanFirestoreData } from './depositSync';
 import { safeFormatDateTime } from './dateUtils';
+import { safeFetch, safeFetchJson } from './safeApi';
 
 export const WITHDRAWAL_REQUESTS_KEY = 'forex_withdrawal_requests_v2';
 
@@ -28,7 +29,10 @@ export function getStoredLocalWithdrawals(): TransactionRecord[] {
   try {
     const raw = localStorage.getItem(WITHDRAWAL_REQUESTS_KEY);
     if (raw) {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
     }
   } catch (e) {
     console.warn('Failed to parse local withdrawal requests:', e);
@@ -38,7 +42,8 @@ export function getStoredLocalWithdrawals(): TransactionRecord[] {
 
 export function saveStoredLocalWithdrawals(withdrawals: TransactionRecord[]): void {
   try {
-    localStorage.setItem(WITHDRAWAL_REQUESTS_KEY, JSON.stringify(withdrawals));
+    const sanitized = (withdrawals || []).slice(0, 50);
+    localStorage.setItem(WITHDRAWAL_REQUESTS_KEY, JSON.stringify(sanitized));
   } catch (e) {
     console.warn('Failed to save local withdrawal requests:', e);
   }
@@ -95,11 +100,24 @@ export async function saveWithdrawalRequestToFirestore(request: {
       createdAt: nowIso
     };
 
-    // 1. Post to persistent Backend API (Permanent server storage in withdrawals.json)
+    // 1. Local storage cache (0ms instant response)
+    const local = getStoredLocalWithdrawals();
+    const updatedLocal = [wdDoc, ...local.filter(w => w.id !== reqId && w.txHash !== reqId)];
+    saveStoredLocalWithdrawals(updatedLocal);
+
+    // 2. Instant BroadcastChannel notification for zero-latency across tabs & Admin Panel
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
-      const apiRes = await fetch('/api/withdrawals', {
+      if (typeof window !== 'undefined') {
+        const bc = new BroadcastChannel('forex_admin_channel');
+        bc.postMessage({ type: 'NEW_WITHDRAWAL', withdrawal: wdDoc });
+        bc.close();
+        window.dispatchEvent(new CustomEvent('forex_withdrawal_submitted', { detail: wdDoc }));
+      }
+    } catch (_) {}
+
+    // 3. Post to Backend API in background (non-blocking with 600ms timeout guard)
+    try {
+      safeFetch('/api/withdrawals', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -115,30 +133,8 @@ export async function saveWithdrawalRequestToFirestore(request: {
           depositBonusGranted: request.depositBonusGranted,
           systemDeductedProfitAmount: request.systemDeductedProfitAmount,
           totalNetProfit: request.totalNetProfit
-        }),
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-      if (apiRes.ok) {
-        console.log('[withdrawalSync] ✅ Backend API acknowledged withdrawal:', reqId);
-      }
-    } catch (apiErr) {
-      console.warn('[withdrawalSync] Backend API withdrawal POST note:', apiErr);
-    }
-
-    // 2. Local storage cache
-    const local = getStoredLocalWithdrawals();
-    const updatedLocal = [wdDoc, ...local.filter(w => w.id !== reqId && w.txHash !== reqId)];
-    saveStoredLocalWithdrawals(updatedLocal);
-
-    // 3. Instant BroadcastChannel notification for zero-latency across tabs & Admin Panel
-    try {
-      if (typeof window !== 'undefined') {
-        const bc = new BroadcastChannel('forex_admin_channel');
-        bc.postMessage({ type: 'NEW_WITHDRAWAL', withdrawal: wdDoc });
-        bc.close();
-        window.dispatchEvent(new CustomEvent('forex_withdrawal_submitted', { detail: wdDoc }));
-      }
+        })
+      }, 600).catch(() => {});
     } catch (_) {}
 
     // 4. Sync to Firestore root withdrawals collection (Permanent Cloud Storage)
@@ -285,22 +281,18 @@ export function subscribeAllWithdrawalsFromFirestore(
     onUpdate(merged);
   };
 
-  // 1. Initial fetch & poll Backend API
+  // 1. Initial fetch from Backend API (with timeout guard, no aggressive polling)
   const fetchFromApi = async () => {
     if (isCleanedUp) return;
     try {
-      const res = await fetch('/api/withdrawals');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.withdrawals) && data.withdrawals.length > 0) {
-          mergeWithdrawals(data.withdrawals);
-        }
+      const data = await safeFetchJson('/api/withdrawals', {}, 600);
+      if (data && Array.isArray(data.withdrawals) && data.withdrawals.length > 0) {
+        mergeWithdrawals(data.withdrawals);
       }
     } catch (_) {}
   };
 
   fetchFromApi();
-  const pollInterval = setInterval(fetchFromApi, 4000);
 
   // 2. Local BroadcastChannel & Window event listeners
   let bc: BroadcastChannel | null = null;
@@ -390,7 +382,6 @@ export function subscribeAllWithdrawalsFromFirestore(
 
   return () => {
     isCleanedUp = true;
-    clearInterval(pollInterval);
     if (bc) {
       try { bc.close(); } catch (_) {}
     }
@@ -495,45 +486,52 @@ export function subscribeUserWithdrawalsFromFirestore(
     } catch (_) {}
   };
 
-  // 2. Fetch from persistent backend API immediately and poll every 3.5s
+  // 2. Fetch from persistent backend API if running (guarded with safe timeout)
+  let isCleanedUp = false;
+  let isWdFetchInFlight = false;
+  let backendFailCount = 0;
   const fetchBackendWithdrawals = async () => {
+    if (isCleanedUp || backendFailCount >= 2 || isWdFetchInFlight) return;
+    isWdFetchInFlight = true;
     try {
       const url = `/api/withdrawals?userUid=${encodeURIComponent(cleanUid)}&userEmail=${encodeURIComponent(cleanEmail)}`;
-      const res = await fetch(url);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.withdrawals && Array.isArray(data.withdrawals)) {
-          const userWds: TransactionRecord[] = data.withdrawals
-            .filter(isUserMatch)
-            .map((w: any) => ({
-              id: w.id,
-              userUid: w.userUid,
-              userEmail: w.userEmail,
-              accountType: w.accountType || 'live',
-              type: 'Withdrawal',
-              method: w.method || 'Auto Gateway',
-              amount: Number(w.amount) || 0,
-              status: w.status || 'Pending',
-              timestamp: w.timestamp || safeFormatDateTime(w.createdAt, 'Recently'),
-              txHash: w.trxId || w.id,
-              trxId: w.trxId || w.id,
-              destinationAddress: w.destinationAddress || '',
-              depositBonusGranted: w.depositBonusGranted,
-              systemDeductedProfitAmount: w.systemDeductedProfitAmount,
-              totalNetProfit: w.totalNetProfit,
-              rejectionReason: w.rejectionReason || undefined,
-              createdAt: w.createdAt
-            }));
-          emitUpdate(userWds);
-        }
+      const data = await safeFetchJson(url, {}, 600);
+      if (data && data.withdrawals && Array.isArray(data.withdrawals)) {
+        backendFailCount = 0;
+        const userWds: TransactionRecord[] = data.withdrawals
+          .filter(isUserMatch)
+          .map((w: any) => ({
+            id: w.id,
+            userUid: w.userUid,
+            userEmail: w.userEmail,
+            accountType: w.accountType || 'live',
+            type: 'Withdrawal',
+            method: w.method || 'Auto Gateway',
+            amount: Number(w.amount) || 0,
+            status: w.status || 'Pending',
+            timestamp: w.timestamp || safeFormatDateTime(w.createdAt, 'Recently'),
+            txHash: w.trxId || w.id,
+            trxId: w.trxId || w.id,
+            destinationAddress: w.destinationAddress || '',
+            depositBonusGranted: w.depositBonusGranted,
+            systemDeductedProfitAmount: w.systemDeductedProfitAmount,
+            totalNetProfit: w.totalNetProfit,
+            rejectionReason: w.rejectionReason || undefined,
+            createdAt: w.createdAt
+          }));
+        emitUpdate(userWds);
+      } else {
+        backendFailCount++;
       }
-    } catch (err) {
-      console.warn('[withdrawalSync] User withdrawals backend fetch note:', err);
+    } catch (_) {
+      backendFailCount++;
+    } finally {
+      isWdFetchInFlight = false;
     }
   };
 
   fetchBackendWithdrawals();
-  const pollInterval = setInterval(fetchBackendWithdrawals, 15000);
+  const pollInterval = setInterval(fetchBackendWithdrawals, 30000);
 
   // 3. BroadcastChannel listener for real-time status updates
   let bc: BroadcastChannel | null = null;
@@ -602,8 +600,7 @@ export function subscribeUserWithdrawalsFromFirestore(
       if (cleanUid) {
         const qUid = query(collection(db, 'withdrawals'), where('userUid', '==', cleanUid), limit(50));
         unsubs.push(onSnapshot(qUid, handleSnapshot, () => {}));
-      }
-      if (cleanEmail) {
+      } else if (cleanEmail) {
         const qEmail = query(collection(db, 'withdrawals'), where('userEmail', '==', cleanEmail), limit(50));
         unsubs.push(onSnapshot(qEmail, handleSnapshot, () => {}));
       }
@@ -613,6 +610,7 @@ export function subscribeUserWithdrawalsFromFirestore(
   }
 
   return () => {
+    isCleanedUp = true;
     clearInterval(pollInterval);
     if (bc) {
       bc.close();
@@ -643,12 +641,12 @@ export async function approveWithdrawalInFirestore(
   } : w);
   saveStoredLocalWithdrawals(updatedLocal);
 
-  // 2. Call backend API for persistence
+  // 2. Call backend API for persistence (with timeout guard)
   try {
-    fetch(`/api/withdrawals/${encodeURIComponent(wdId)}/approve`, {
+    safeFetch(`/api/withdrawals/${encodeURIComponent(wdId)}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
-    }).catch(() => {});
+    }, 600).catch(() => {});
   } catch (_) {}
 
   // 2b. Broadcast status change across tabs
@@ -738,13 +736,13 @@ export async function rejectWithdrawalInFirestore(
   );
   saveStoredLocalWithdrawals(updatedLocal);
 
-  // 2. Call backend API for persistence
+  // 2. Call backend API for persistence (with timeout guard)
   try {
-    await fetch(`/api/withdrawals/${encodeURIComponent(withdrawalId)}/reject`, {
+    safeFetch(`/api/withdrawals/${encodeURIComponent(withdrawalId)}/reject`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason: finalReason, withdrawal: targetRecord })
-    });
+    }, 600).catch(() => {});
   } catch (_) {}
 
   // 2b. Broadcast rejection status across tabs

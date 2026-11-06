@@ -24,6 +24,7 @@ import {
 import { UserProfileData, INITIAL_MOCK_USERS, getDisplayUserId } from './firestoreSync';
 import { TransactionRecord, AccountType } from '../types';
 import { safeIsoString, safeFormatDateTime } from './dateUtils';
+import { safeFetch, safeFetchJson } from './safeApi';
 
 export interface AdminAuditLog {
   id: string;
@@ -149,13 +150,11 @@ export function subscribeAllUsersFromFirestore(
 
   let isUnsubscribed = false;
 
-  // Helper function to fetch and merge users from server backend API
+  // Helper function to fetch and merge users from server backend API (with timeout guard)
   const fetchAndMergeServerUsers = async () => {
     try {
-      const res = await fetch('/api/admin/users');
-      if (!res.ok) return;
-      const data = await res.json();
-      if (Array.isArray(data?.users) && !isUnsubscribed) {
+      const data = await safeFetchJson('/api/admin/users', {}, 600);
+      if (data && Array.isArray(data?.users) && !isUnsubscribed) {
         const current = getStoredUsersCache().filter(u => !isFakeMockUser(u));
         const map = new Map<string, UserProfileData>();
         current.forEach(u => map.set(u.uid, u));
@@ -527,44 +526,7 @@ export async function updateUserBalancesInFirestore(
     console.warn('Local balance cache update error:', err);
   }
 
-  // 2. Persist to Express backend server with timeout (guarantees disk persistence across restarts)
-  try {
-    const targetEmail = adminInfo.targetUser?.email || '';
-    await withTimeout(
-      fetch('/api/admin/users/update-balance', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userUid: targetUid,
-          uid: targetUid,
-          userEmail: targetEmail,
-          balances: cleanedBalances,
-          liveBalance: live,
-          bonusBalance: bonus,
-          demoBalance: demo,
-          adminEmail: adminInfo.adminEmail,
-          deltaAmount: adminInfo.deltaAmount,
-          deltaType: adminInfo.deltaType,
-          operation: adminInfo.operation,
-          actionNote: adminInfo.actionNote
-        })
-      }).then((r) => (r.ok ? r.json() : null)),
-      2500,
-      null
-    );
-
-    // Also sync to /api/users/sync-balances for phone/desktop sync
-    fetch('/api/users/sync-balances', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uid: targetUid, userEmail: targetEmail, balances: cleanedBalances })
-    }).catch(() => {});
-  } catch (err) {
-    console.warn('Server balance sync error:', err);
-  }
-
-  // 3. Persist to Firestore with timeout (so slow cloud connection never hangs the admin UI)
-  // CRITICAL: We DO NOT create any transaction record in 'deposits' or 'transactions' or 'withdrawals'!
+  // 2. Persist to Firestore with timeout (guarantees cloud balance persistence)
   if (!isQuotaExceeded()) {
     try {
       const userRef = doc(db, 'users', targetUid);
@@ -589,6 +551,36 @@ export async function updateUserBalancesInFirestore(
       }
     }
   }
+
+  // 3. Persist to Backend in background (with timeout guard)
+  try {
+    const targetEmail = adminInfo.targetUser?.email || '';
+    safeFetch('/api/admin/users/update-balance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userUid: targetUid,
+        uid: targetUid,
+        userEmail: targetEmail,
+        balances: cleanedBalances,
+        liveBalance: live,
+        bonusBalance: bonus,
+        demoBalance: demo,
+        adminEmail: adminInfo.adminEmail,
+        deltaAmount: adminInfo.deltaAmount,
+        deltaType: adminInfo.deltaType,
+        operation: adminInfo.operation,
+        actionNote: adminInfo.actionNote
+      })
+    }, 600).catch(() => {});
+
+    // Also sync to /api/users/sync-balances for phone/desktop sync
+    safeFetch('/api/users/sync-balances', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uid: targetUid, userEmail: targetEmail, balances: cleanedBalances })
+    }, 600).catch(() => {});
+  } catch (_) {}
 
   // 4. Record Admin Audit Log (internal admin audit only, NOT user transaction history)
   try {
@@ -662,9 +654,9 @@ export async function issueDirectDepositCreditInFirestore(
       { merge: true }
     );
 
-    // Sync to Express backend for immediate cross-device distribution & permanent json storage
+    // Sync to backend for immediate cross-device distribution (with timeout guard)
     try {
-      fetch('/api/admin/users/direct-deposit', {
+      safeFetch('/api/admin/users/direct-deposit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -673,13 +665,13 @@ export async function issueDirectDepositCreditInFirestore(
           accountType: walletType,
           note: adminInfo.note || 'Direct Admin Deposit Credit'
         })
-      }).catch(() => {});
+      }, 600).catch(() => {});
 
-      fetch('/api/users/sync-balances', {
+      safeFetch('/api/users/sync-balances', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uid: targetUid, balances: updatedBalances })
-      }).catch(() => {});
+      }, 600).catch(() => {});
     } catch (_) {}
 
     // Also create a recorded deposit entry in 'deposits' and 'transactions' so user sees it in transaction history
@@ -762,13 +754,13 @@ export async function toggleUserBlockInFirestore(
     );
     saveStoredUsersCache(updated);
 
-    // Sync to backend persistent server storage
+    // Sync to backend persistent server storage (with timeout guard)
     try {
-      fetch('/api/admin/users/toggle-block', {
+      safeFetch('/api/admin/users/toggle-block', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uid: targetUid, isBlocked })
-      }).catch(() => {});
+      }, 600).catch(() => {});
     } catch (_) {}
 
     const targetName = adminInfo.targetUser?.displayName || adminInfo.targetUser?.fullName || targetUid;
@@ -931,7 +923,7 @@ export async function deleteUserPermanentlyFromFirestore(
     saveStoredUsersCache(filtered);
 
     try {
-      fetch(`/api/admin/users/${targetUid}`, { method: 'DELETE' }).catch(() => {});
+      safeFetch(`/api/admin/users/${targetUid}`, { method: 'DELETE' }, 600).catch(() => {});
     } catch (_) {}
 
     // 4. Record Audit Log

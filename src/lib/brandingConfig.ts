@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { safeFetch, safeFetchJson } from './safeApi';
 
 export interface BrandingConfig {
   logoUrl: string;
@@ -108,13 +109,13 @@ export async function saveBrandingConfig(updates: Partial<BrandingConfig>): Prom
     } catch (_) {}
   }
 
-  // 2. Persist to Express backend server for cross-device consistency
+  // 2. Persist to Express backend server for cross-device consistency (with timeout guard)
   try {
-    fetch('/api/branding', {
+    safeFetch('/api/branding', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(merged),
-    }).catch(() => {});
+    }, 600).catch(() => {});
   } catch (_) {}
 
   // 3. Persist to Firestore for real-time live push to all online phones & desktops
@@ -170,35 +171,28 @@ export function subscribeToBranding(onUpdate: (config: BrandingConfig) => void):
     window.addEventListener('forex_branding_updated', handleCustomEvent);
   }
 
-  // Periodic server polling (every 3.5s) to guarantee phone <-> desktop sync
-  const pollTimer = setInterval(async () => {
-    try {
-      const res = await fetch('/api/branding');
-      if (res.ok) {
-        const data = await res.json();
-        if (data && typeof data === 'object' && data.logoUrl !== undefined) {
-          const current = getStoredBranding();
-          if (data.logoUrl !== current.logoUrl || data.brandName !== current.brandName || data.updatedAt !== current.updatedAt) {
-            saveStoredBranding(data);
-            updateBrowserFavicon(data.logoUrl);
-            onUpdate(data);
-          }
-        }
-      }
-    } catch (_) {}
-  }, 3500);
-
-  // Tab focus / visibility change handler: immediately refresh from server & Firestore
-  const handleFocus = async () => {
-    try {
-      const res = await fetch('/api/branding');
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.logoUrl !== undefined) {
+  // Initial fetch on mount (with safe timeout, zero repeated background polling)
+  safeFetchJson('/api/branding', {}, 600)
+    .then(data => {
+      if (data && typeof data === 'object' && data.logoUrl !== undefined) {
+        const current = getStoredBranding();
+        if (data.logoUrl !== current.logoUrl || data.brandName !== current.brandName || data.updatedAt !== current.updatedAt) {
           saveStoredBranding(data);
           updateBrowserFavicon(data.logoUrl);
           onUpdate(data);
         }
+      }
+    })
+    .catch(() => {});
+
+  // Tab focus / visibility change handler: immediately refresh from server & Firestore
+  const handleFocus = async () => {
+    try {
+      const data = await safeFetchJson('/api/branding', {}, 600);
+      if (data?.logoUrl !== undefined) {
+        saveStoredBranding(data);
+        updateBrowserFavicon(data.logoUrl);
+        onUpdate(data);
       }
     } catch (_) {}
   };
@@ -247,7 +241,6 @@ export function subscribeToBranding(onUpdate: (config: BrandingConfig) => void):
 
   return () => {
     if (firestoreTimer) clearTimeout(firestoreTimer);
-    clearInterval(pollTimer);
     const ch = getBrandingBroadcastChannel();
     if (ch) {
       ch.removeEventListener('message', handleBroadcast);

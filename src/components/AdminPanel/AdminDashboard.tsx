@@ -167,6 +167,7 @@ import {
 } from '../../lib/marketConfig';
 import { getDisplayUserId } from '../../lib/firestoreSync';
 import { CustomFirebaseModal } from '../CustomFirebaseModal';
+import { safeFetch, safeFetchJson } from '../../lib/safeApi';
 
 interface AdminDashboardProps {
   adminEmail: string;
@@ -351,83 +352,114 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [forecastCandles, setForecastCandles] = useState<any[]>([]);
 
   useEffect(() => {
-    const fetchExposure = () => {
-      fetch('/api/otc/exposure')
-        .then(r => r.json())
-        .then(data => {
-          if (data && data.success) {
-            setOtcExposureData(data.marketsExposure || {});
-            setActiveLiveOtcCount(data.activeLiveOrdersCount || 0);
-            setAdminPredictorMode(Boolean(data.adminPredictorMode));
-            setExposureControlEnabled(Boolean(data.exposureControlEnabled));
-          }
-        })
-        .catch(() => {});
+    let inFlight = false;
+    let failCount = 0;
+    const fetchExposure = async () => {
+      if (inFlight || failCount >= 2) return;
+      inFlight = true;
+      try {
+        const data = await safeFetchJson<{
+          success?: boolean;
+          marketsExposure?: Record<string, any>;
+          activeLiveOrdersCount?: number;
+          adminPredictorMode?: boolean;
+          exposureControlEnabled?: boolean;
+        }>('/api/otc/exposure', 600);
+
+        if (data && data.success) {
+          failCount = 0;
+          setOtcExposureData(data.marketsExposure || {});
+          setActiveLiveOtcCount(data.activeLiveOrdersCount || 0);
+          setAdminPredictorMode(Boolean(data.adminPredictorMode));
+          setExposureControlEnabled(Boolean(data.exposureControlEnabled));
+        } else {
+          failCount++;
+        }
+      } catch (_) {
+        failCount++;
+      } finally {
+        inFlight = false;
+      }
     };
 
     fetchExposure();
-    const timer = setInterval(fetchExposure, 2500);
+    const timer = setInterval(() => {
+      if (failCount < 2) fetchExposure();
+    }, 15000);
     return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
-    const fetchForecast = () => {
-      if (!selectedForecastSymbol) return;
-      fetch(`/api/otc/forecast/${encodeURIComponent(selectedForecastSymbol)}/M1?count=5`)
-        .then(r => r.json())
-        .then(data => {
-          if (data && Array.isArray(data.forecast)) {
-            setForecastCandles(data.forecast);
-          }
-        })
-        .catch(() => {});
+    let inFlight = false;
+    let failCount = 0;
+    const fetchForecast = async () => {
+      if (!selectedForecastSymbol || inFlight || failCount >= 2) return;
+      inFlight = true;
+      try {
+        const data = await safeFetchJson<{
+          forecast?: any[];
+        }>(`/api/otc/forecast/${encodeURIComponent(selectedForecastSymbol)}/M1?count=5`, 600);
+
+        if (data && Array.isArray(data.forecast)) {
+          failCount = 0;
+          setForecastCandles(data.forecast);
+        } else {
+          failCount++;
+        }
+      } catch (_) {
+        failCount++;
+      } finally {
+        inFlight = false;
+      }
     };
 
     fetchForecast();
-    const timer = setInterval(fetchForecast, 3000);
+    const timer = setInterval(() => {
+      if (failCount < 2) fetchForecast();
+    }, 15000);
     return () => clearInterval(timer);
   }, [selectedForecastSymbol]);
 
   const handleToggleAdminPredictor = async () => {
     const newMode = !adminPredictorMode;
     const newExposureState = newMode ? false : exposureControlEnabled;
+
+    // Instant local state & storage (0ms)
+    setAdminPredictorMode(newMode);
+    if (newMode) setExposureControlEnabled(false);
     try {
-      const res = await fetch('/api/otc/admin-mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ adminPredictorMode: newMode, exposureControlEnabled: newExposureState }),
-      });
-      if (res.ok) {
-        setAdminPredictorMode(newMode);
-        if (newMode) setExposureControlEnabled(false);
-        try {
-          localStorage.setItem('forex_admin_radar_active', String(newMode));
-          if (newMode) localStorage.setItem('forex_admin_exposure_control', 'false');
-        } catch (_) {}
-        addAuditLog(`${newMode ? 'Enabled' : 'Disabled'} Admin 5-Candle Future Predictor Mode`);
-      }
+      localStorage.setItem('forex_admin_radar_active', String(newMode));
+      if (newMode) localStorage.setItem('forex_admin_exposure_control', 'false');
     } catch (_) {}
+    addAuditLog(`${newMode ? 'Enabled Admin 5-Candle Future Predictor Mode (Disabled 5s Loss Shield)' : 'Disabled Admin 5-Candle Future Predictor Mode'}`);
+
+    // Non-blocking safe notification to backend with 3000ms timeout
+    safeFetch('/api/otc/admin-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminPredictorMode: newMode, exposureControlEnabled: newExposureState }),
+    }, 3000).catch(() => {});
   };
 
   const handleToggleExposureControl = async () => {
     const newExposureState = !exposureControlEnabled;
-    const newPredictorMode = newExposureState ? false : true;
+    const newPredictorMode = newExposureState ? false : adminPredictorMode;
+
+    // Instant local state & storage (0ms)
+    setExposureControlEnabled(newExposureState);
+    if (newExposureState) setAdminPredictorMode(false);
     try {
-      const res = await fetch('/api/otc/admin-mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ adminPredictorMode: newPredictorMode, exposureControlEnabled: newExposureState }),
-      });
-      if (res.ok) {
-        setExposureControlEnabled(newExposureState);
-        setAdminPredictorMode(newPredictorMode);
-        try {
-          localStorage.setItem('forex_admin_exposure_control', String(newExposureState));
-          localStorage.setItem('forex_admin_radar_active', String(newPredictorMode));
-        } catch (_) {}
-        addAuditLog(`${newExposureState ? 'Enabled 5s Loss (Forces Trade Loss in Last 5 Seconds)' : 'Disabled 5s Loss (Enabled Admin 5-Candle Future Forecast)'}`);
-      }
+      localStorage.setItem('forex_admin_exposure_control', String(newExposureState));
+      if (newExposureState) localStorage.setItem('forex_admin_radar_active', 'false');
     } catch (_) {}
+    addAuditLog(`${newExposureState ? 'Enabled 5s Loss Shield (Disabled Radar Mode)' : 'Disabled 5s Loss Shield'}`);
+
+    // Non-blocking safe notification to backend with 3000ms timeout
+    safeFetch('/api/otc/admin-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminPredictorMode: newPredictorMode, exposureControlEnabled: newExposureState }),
+    }, 3000).catch(() => {});
   };
 
   // States
@@ -438,26 +470,41 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [userStatusFilter, setUserStatusFilter] = useState<'all' | 'active' | 'blocked' | 'verified' | 'unverified'>('all');
   const [selectedScreenshotTx, setSelectedScreenshotTx] = useState<TransactionRecord | null>(null);
 
-  // Sync all live & closed trades from server persistent store
+  // Sync all live & closed trades from server persistent store with safe timeout and circuit breaker
   useEffect(() => {
-    const fetchServerTrades = () => {
-      fetch('/api/admin/trades')
-        .then(r => r.json())
-        .then(data => {
-          if (data && data.success && Array.isArray(data.trades)) {
-            setTrades(prev => {
-              if (prev.length === 0) return data.trades;
-              const map = new Map<string, TradePosition>();
-              data.trades.forEach((t: TradePosition) => map.set(t.id, t));
-              prev.forEach(t => map.set(t.id, t));
-              return Array.from(map.values());
-            });
-          }
-        })
-        .catch(() => {});
+    let inFlight = false;
+    let failCount = 0;
+    const fetchServerTrades = async () => {
+      if (inFlight || failCount >= 2) return;
+      inFlight = true;
+      try {
+        const data = await safeFetchJson<{
+          success?: boolean;
+          trades?: TradePosition[];
+        }>('/api/admin/trades', 800);
+
+        if (data && data.success && Array.isArray(data.trades)) {
+          failCount = 0;
+          setTrades(prev => {
+            if (prev.length === 0) return data.trades!;
+            const map = new Map<string, TradePosition>();
+            data.trades!.forEach((t: TradePosition) => map.set(t.id, t));
+            prev.forEach(t => map.set(t.id, t));
+            return Array.from(map.values());
+          });
+        } else {
+          failCount++;
+        }
+      } catch (_) {
+        failCount++;
+      } finally {
+        inFlight = false;
+      }
     };
     fetchServerTrades();
-    const interval = setInterval(fetchServerTrades, 3000);
+    const interval = setInterval(() => {
+      if (failCount < 2) fetchServerTrades();
+    }, 20000);
     return () => clearInterval(interval);
   }, []);
 
@@ -1056,17 +1103,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           const currBonus = u.balances.bonus;
 
           if (tx.type === 'Deposit') {
-            const bonusCredit = typeof tx.bonusAmount === 'number' 
+            const bonusCredit = typeof tx.bonusAmount === 'number' && tx.bonusAmount > 0
               ? tx.bonusAmount 
-              : (Boolean((tx as any).claimBonus) && tx.amount >= depositRules.bonusMinDepositUsd && tx.amount <= depositRules.bonusMaxDepositUsd ? tx.amount : 0);
+              : (Boolean((tx as any).claimBonus) && tx.amount >= 250 ? tx.amount : 0);
             return { 
               ...u, 
+              depositBonusGranted: ((u as any).depositBonusGranted || 0) + (bonusCredit > 0 ? bonusCredit : 0),
               hasClaimedWelcomeBonus: bonusCredit > 0 ? true : Boolean((u as any).hasClaimedWelcomeBonus),
               bonusClaimed: bonusCredit > 0 ? true : Boolean((u as any).bonusClaimed),
               balances: { 
                 ...u.balances, 
-                live: currLive + tx.amount,
-                bonus: currBonus + bonusCredit
+                live: Number((currLive + tx.amount).toFixed(2)),
+                bonus: Number((currBonus + bonusCredit).toFixed(2))
               } 
             };
           } else {

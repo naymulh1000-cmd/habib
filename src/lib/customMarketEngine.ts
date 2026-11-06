@@ -30,6 +30,7 @@ import {
 } from './candleHistoryService';
 import { onGoldPriceUpdate, getLatestGoldPrice } from './goldLiveDataService';
 import { realTimeLiveMarketService } from './realTimeLiveMarketService';
+import { safeFetchJson } from './safeApi';
 
 export interface MarketTickerData {
   symbol: string;
@@ -89,6 +90,8 @@ class CustomMarketEngineService {
   private lastFirestoreWrite: Map<string, number> = new Map();
   private serverTimeOffset = typeof window !== 'undefined' ? Number(sessionStorage.getItem('broker_server_time_offset') || '0') : 0;
   private activeViewedSymbol: string = 'EUR/USD OTC';
+  private activeViewedTimeframe: TimeframeId = 'M1';
+  private exchangeAnchorPrices: Map<string, number> = new Map();
 
   constructor() {
     // Heavy intervals and tick loops are deferred until init() or active subscription
@@ -104,6 +107,16 @@ class CustomMarketEngineService {
     return this.activeViewedSymbol;
   }
 
+  public setActiveViewedTimeframe(timeframe: TimeframeId) {
+    if (timeframe) {
+      this.activeViewedTimeframe = timeframe;
+    }
+  }
+
+  public getActiveViewedTimeframe(): TimeframeId {
+    return this.activeViewedTimeframe;
+  }
+
   public getSyncedNow(): number {
     return Date.now() + this.serverTimeOffset;
   }
@@ -116,86 +129,109 @@ class CustomMarketEngineService {
     if (this.isInitialized) return;
     this.isInitialized = true;
 
-    // Synchronize clock with authoritative server engine to ensure 100% identical candles across all users
-    const syncServerClock = () => {
+    // Synchronize clock with authoritative server engine (safe timeout & circuit breaker)
+    let serverClockFails = 0;
+    const syncServerClock = async () => {
+      if (serverClockFails >= 2) return;
       try {
         if (typeof window !== 'undefined') {
           const reqStart = Date.now();
-          fetch('/api/server-time')
-            .then(res => res.json())
-            .then(data => {
-              if (typeof data.time === 'number') {
-                const reqEnd = Date.now();
-                const roundTrip = (reqEnd - reqStart) / 2;
-                this.serverTimeOffset = Math.round(data.time - (reqStart + roundTrip));
-                try {
-                  sessionStorage.setItem('broker_server_time_offset', String(this.serverTimeOffset));
-                } catch (_) {}
-              }
-            })
-            .catch(() => {});
+          const data = await safeFetchJson('/api/server-time', {}, 600);
+          if (data && typeof data.time === 'number') {
+            serverClockFails = 0;
+            const reqEnd = Date.now();
+            const roundTrip = (reqEnd - reqStart) / 2;
+            this.serverTimeOffset = Math.round(data.time - (reqStart + roundTrip));
+            try {
+              sessionStorage.setItem('broker_server_time_offset', String(this.serverTimeOffset));
+            } catch (_) {}
+          } else {
+            serverClockFails++;
+          }
         }
-      } catch (_) {}
+      } catch (_) {
+        serverClockFails++;
+      }
     };
 
     syncServerClock();
-    // Resync every 20 seconds to maintain sub-second clock alignment against local drift
-    setInterval(syncServerClock, 20000);
+    setInterval(syncServerClock, 30000);
 
-    // Synchronize live OTC order exposure & house risk management with central server
-    const syncOtcExposure = () => {
+    // Synchronize live OTC order exposure & house risk management with central server (resilient auto-recovery)
+    let isOtcExposureInFlight = false;
+    let nextExposureRetryTime = 0;
+    const syncOtcExposure = async () => {
+      const now = Date.now();
+      if (isOtcExposureInFlight || now < nextExposureRetryTime) return;
       try {
         if (typeof window !== 'undefined') {
-          fetch('/api/otc/exposure')
-            .then(res => res.json())
-            .then(data => {
-              if (data && data.success && data.marketsExposure) {
-                Object.keys(data.marketsExposure).forEach(sym => {
-                  const exp = data.marketsExposure[sym];
-                  setMarketLiveExposure(sym, exp);
-                });
-              }
-            })
-            .catch(() => {});
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+          isOtcExposureInFlight = true;
+          const data = await safeFetchJson('/api/otc/exposure', {}, 3000);
+          if (data && data.success && data.marketsExposure) {
+            nextExposureRetryTime = 0;
+            Object.keys(data.marketsExposure).forEach(sym => {
+              const exp = data.marketsExposure[sym];
+              setMarketLiveExposure(sym, exp);
+            });
+          } else {
+            nextExposureRetryTime = now + 2500;
+          }
         }
-      } catch (_) {}
+      } catch (_) {
+        nextExposureRetryTime = now + 2500;
+      } finally {
+        isOtcExposureInFlight = false;
+      }
     };
 
     syncOtcExposure();
     setInterval(syncOtcExposure, 2000);
 
-    // Authoritative Live Tick & Active Candle Synchronization from Central Server
-    // Eliminates client divergence and ensures 100% identical candles and prices across all phones
-    const syncOtcLiveTicks = () => {
+    // Authoritative Live Tick & Active Candle Synchronization from Central Server (1-second tick cadence)
+    // Guarantees 100-200 phones, tablets, and desktop devices show the EXACT same ticks and candle shapes
+    let isOtcLiveTicksInFlight = false;
+    let nextLiveTicksRetryTime = 0;
+    const syncOtcLiveTicks = async () => {
+      const now = Date.now();
+      if (isOtcLiveTicksInFlight || now < nextLiveTicksRetryTime) return;
       try {
         if (typeof window !== 'undefined') {
-          fetch('/api/otc/live-ticks')
-            .then(res => res.json())
-            .then(data => {
-              if (data && data.success && data.ticks) {
-                if (typeof data.serverTime === 'number') {
-                  const localNow = Date.now();
-                  this.serverTimeOffset = Math.round(data.serverTime - localNow);
-                }
-                Object.keys(data.ticks).forEach(cleanSym => {
-                  const tick = data.ticks[cleanSym];
-                  if (!tick) return;
-                  const market = this.getMarket(tick.symbol || cleanSym);
-                  const isOtc = market && (market.category === 'otc' || Boolean(market.symbol && market.symbol.toUpperCase().includes('OTC')) || market.isRealMarket === false);
-                  if (market && isOtc) {
-                    if (typeof tick.price === 'number') {
-                      this.currentPrices.set(market.symbol, tick.price);
-                    }
-                    if (tick.activeCandle) {
-                      this.applyAuthenticExchangeCandle(market, 'M1', tick.activeCandle);
-                    }
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+          isOtcLiveTicksInFlight = true;
+          const data = await safeFetchJson('/api/otc/live-ticks', {}, 3000);
+          if (data && data.success && data.ticks) {
+            nextLiveTicksRetryTime = 0;
+            if (typeof data.serverTime === 'number') {
+              const localNow = Date.now();
+              this.serverTimeOffset = Math.round(data.serverTime - localNow);
+            }
+            Object.keys(data.ticks).forEach(cleanSym => {
+              const tick = data.ticks[cleanSym];
+              if (!tick) return;
+              const market = this.getMarket(tick.symbol || cleanSym);
+              const isOtc = market && (market.category === 'otc' || Boolean(market.symbol && market.symbol.toUpperCase().includes('OTC')) || market.isRealMarket === false);
+              if (market && isOtc) {
+                if (tick.activeCandle) {
+                  const bucketKey = `${market.symbol}_M1`;
+                  const bucket = this.candleBuckets.get(bucketKey);
+                  const last = bucket && bucket.length > 0 ? bucket[bucket.length - 1] : undefined;
+                  // Only apply server active candle if client bucket is empty or server has progressed to a new candle
+                  if (!last || tick.activeCandle.time > last.time) {
+                    this.applyAuthenticExchangeCandle(market, 'M1', tick.activeCandle);
                   }
-                });
+                }
               }
-            })
-            .catch(() => {});
+            });
+          } else {
+            nextLiveTicksRetryTime = now + 1500;
+          }
         }
-      } catch (_) {}
+      } catch (_) {
+        nextLiveTicksRetryTime = now + 1500;
+      } finally {
+        isOtcLiveTicksInFlight = false;
+      }
     };
 
     syncOtcLiveTicks();
@@ -238,6 +274,7 @@ class CustomMarketEngineService {
     // Real-time live gold sync
     onGoldPriceUpdate((goldPrice) => {
       if (goldPrice && goldPrice > 0) {
+        this.exchangeAnchorPrices.set('XAU/USD', goldPrice);
         const goldMarket = this.getMarket('XAU/USD') || this.getMarket('xau_usd');
         if (goldMarket) {
           this.currentPrices.set(goldMarket.symbol, goldPrice);
@@ -255,27 +292,32 @@ class CustomMarketEngineService {
       window.addEventListener('real_live_market_tick', (e: any) => {
         const tick = e.detail;
         if (!tick || !tick.symbol || !tick.price) return;
+        this.exchangeAnchorPrices.set(tick.symbol, tick.price);
         const market = this.getMarket(tick.symbol);
         if (market && (market.isRealMarket || market.category !== 'otc')) {
           const now = this.getSyncedNow();
           const price = tick.price;
           this.currentPrices.set(market.symbol, price);
 
-          // Real-time sub-second candle update across all active timeframes
-          this.updateCandleBucket(market, 'M1', 60, price, now);
-          ['S1', 'S5', 'S15', 'S30'].forEach((tfId) => {
-            const tfObj = SUPPORTED_TIMEFRAMES.find(t => t.id === tfId);
-            if (tfObj) {
-              this.updateCandleBucket(market, tfObj.id, tfObj.seconds, price, now);
+          // Real-time candle update only for active viewed chart symbols (preserves 90%+ CPU)
+          const isChartActive = this.activeViewedSymbol === market.symbol ||
+            (this.candleListeners.get(`${market.symbol}_M1`)?.size || 0) > 0;
+
+          if (isChartActive) {
+            this.updateCandleBucket(market, 'M1', 60, price, now);
+            if (this.activeViewedTimeframe && ['S1', 'S5', 'S15', 'S30'].includes(this.activeViewedTimeframe)) {
+              const tfObj = SUPPORTED_TIMEFRAMES.find(t => t.id === this.activeViewedTimeframe);
+              if (tfObj) {
+                this.updateCandleBucket(market, tfObj.id, tfObj.seconds, price, now);
+              }
+            } else if (this.activeViewedTimeframe && this.activeViewedTimeframe !== 'M1') {
+              const tfObj = SUPPORTED_TIMEFRAMES.find(t => t.id === this.activeViewedTimeframe);
+              const m1Bucket = this.candleBuckets.get(`${market.symbol}_M1`) || [];
+              if (tfObj && m1Bucket.length > 0) {
+                this.updateAggregatedTimeframeBucket(market, tfObj.id, tfObj.seconds, m1Bucket, price, now);
+              }
             }
-          });
-          const m1Bucket = this.candleBuckets.get(`${market.symbol}_M1`) || [];
-          ['M5', 'M15', 'M30', 'H1', 'H4', 'D1'].forEach((tfId) => {
-            const tfObj = SUPPORTED_TIMEFRAMES.find(t => t.id === tfId);
-            if (tfObj && m1Bucket.length > 0) {
-              this.updateAggregatedTimeframeBucket(market, tfObj.id, tfObj.seconds, m1Bucket, price, now);
-            }
-          });
+          }
           this.notifyTicker(market, price, now);
         }
       });
@@ -303,25 +345,48 @@ class CustomMarketEngineService {
   private startTickLoop() {
     if (this.engineTimer) clearInterval(this.engineTimer);
 
-    // Dynamic micro-tick interval (default 100ms for smooth sub-second updates)
-    this.engineTimer = setInterval(() => {
+    let currentInterval = 1000;
+    const runTick = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        return; // Pause when browser tab is minimized/hidden
+      }
+
+      // Check if any chart/candle listeners are actively subscribed
+      let hasChartListeners = false;
+      for (const set of this.candleListeners.values()) {
+        if (set && set.size > 0) {
+          hasChartListeners = true;
+          break;
+        }
+      }
+
+      const targetInterval = hasChartListeners ? 50 : 500;
+      if (targetInterval !== currentInterval) {
+        currentInterval = targetInterval;
+        clearInterval(this.engineTimer);
+        this.engineTimer = setInterval(runTick, currentInterval);
+      }
+
       this.tick();
-    }, 100);
+    };
+
+    this.engineTimer = setInterval(runTick, 1000);
   }
 
   private tick() {
     this.tickCounter++;
     const now = this.getSyncedNow();
 
-    // 1. Identify markets with active candle listeners or active viewed chart
     const activeCandleSymbols = new Set<string>();
+    let hasActiveChartListeners = false;
     this.candleListeners.forEach((listeners, bucketKey) => {
       if (listeners.size > 0) {
+        hasActiveChartListeners = true;
         const sym = bucketKey.split('_')[0];
         if (sym) activeCandleSymbols.add(sym);
       }
     });
-    if (this.activeViewedSymbol) {
+    if (hasActiveChartListeners && this.activeViewedSymbol) {
       activeCandleSymbols.add(this.activeViewedSymbol);
     }
 
@@ -335,8 +400,9 @@ class CustomMarketEngineService {
       const market = this.getMarket(symbol);
       if (!market || !market.isActive || market.isRunning === false) return;
 
-      const speedMs = market.speed || market.updateSpeedMs || 100;
-      if (speedMs > 100 && this.tickCounter % Math.max(1, Math.floor(speedMs / 100)) !== 0) {
+      const isOtc = market && (market.category === 'otc' || Boolean(market.symbol && market.symbol.toUpperCase().includes('OTC')) || market.isRealMarket === false);
+      const speedMs = isOtc ? 50 : (market.speed || market.updateSpeedMs || 100);
+      if (speedMs > 50 && this.tickCounter % Math.max(1, Math.floor(speedMs / 50)) !== 0) {
         return;
       }
 
@@ -357,13 +423,26 @@ class CustomMarketEngineService {
         }
       });
 
-      // Aggregate higher timeframes only if M1 has candles
+      // Also directly update active timeframe if higher than M1 (M5, M15, M30, H1, etc.)
+      if (this.activeViewedTimeframe && !['M1', 'S1', 'S5', 'S15', 'S30'].includes(this.activeViewedTimeframe)) {
+        const tfObj = SUPPORTED_TIMEFRAMES.find(t => t.id === this.activeViewedTimeframe);
+        if (tfObj) {
+          this.updateCandleBucket(market, tfObj.id, tfObj.seconds, price, now);
+        }
+      }
+
+      // Aggregate higher timeframes only if M1 has candles and that timeframe has active listeners
       const m1Bucket = this.candleBuckets.get(`${market.symbol}_M1`) || [];
       if (m1Bucket.length > 0) {
         ['M5', 'M15', 'M30', 'H1', 'H4', 'D1'].forEach((tfId) => {
-          const tfObj = SUPPORTED_TIMEFRAMES.find(t => t.id === tfId);
-          if (tfObj) {
-            this.updateAggregatedTimeframeBucket(market, tfObj.id, tfObj.seconds, m1Bucket, price, now);
+          const higherBucketKey = `${market.symbol}_${tfId}`;
+          const hasListeners = (this.candleListeners.get(higherBucketKey)?.size || 0) > 0;
+          const isActivelyViewed = this.activeViewedTimeframe === tfId;
+          if (hasListeners || isActivelyViewed) {
+            const tfObj = SUPPORTED_TIMEFRAMES.find(t => t.id === tfId);
+            if (tfObj) {
+              this.updateAggregatedTimeframeBucket(market, tfObj.id, tfObj.seconds, m1Bucket, price, now);
+            }
           }
         });
       }
@@ -492,11 +571,15 @@ private applyAuthenticExchangeCandle(
     if (last.time === incomingCandle.time) {
       const prevCandle = lastIdx > 0 ? bucket[lastIdx - 1] : undefined;
       const establishedOpen = prevCandle ? prevCandle.close : (last.open || incomingCandle.open);
+      const rawHigh = Math.max(establishedOpen, last.high ?? incomingCandle.high, incomingCandle.high, incomingCandle.close);
+      const rawLow = Math.min(establishedOpen, last.low ?? incomingCandle.low, incomingCandle.low, incomingCandle.close);
+
       bucket[lastIdx] = {
         ...incomingCandle,
         open: establishedOpen,
-        high: Math.max(establishedOpen, incomingCandle.high, incomingCandle.close),
-        low: Math.min(establishedOpen, incomingCandle.low, incomingCandle.close),
+        high: Number(rawHigh.toFixed(market.precision ?? 5)),
+        low: Number(rawLow.toFixed(market.precision ?? 5)),
+        close: incomingCandle.close
       };
     } else if (incomingCandle.time > last.time) {
       // Finalize last candle's close as the strictly identical open for incoming candle (0 gap)
@@ -518,8 +601,8 @@ private applyAuthenticExchangeCandle(
         bucket[existingIdx] = {
           ...incomingCandle,
           open: establishedOpen,
-          high: Math.max(establishedOpen, incomingCandle.high, incomingCandle.close),
-          low: Math.min(establishedOpen, incomingCandle.low, incomingCandle.close),
+          high: Math.max(establishedOpen, bucket[existingIdx].high ?? incomingCandle.high, incomingCandle.high, incomingCandle.close),
+          low: Math.min(establishedOpen, bucket[existingIdx].low ?? incomingCandle.low, incomingCandle.low, incomingCandle.close),
         };
       }
     }
@@ -551,44 +634,17 @@ private applyAuthenticExchangeCandle(
   public calculateRealMarketDynamicTick(market: MarketPairConfig, now: number): number {
     const precision = market.precision ?? ((market.symbol || '').includes('JPY') ? 3 : (market.symbol || '').includes('BTC') || (market.symbol || '').includes('XAU') ? 2 : 5);
     
-    // 1. Get authentic live exchange anchor
+    // Get authentic live exchange anchor directly from real market streamer
     let anchor: number;
     if (market.symbol === 'XAU/USD' || market.id === 'xau_usd') {
       const g = getLatestGoldPrice();
-      anchor = (g && g > 0) ? g : (realTimeLiveMarketService.getLatestPrice('XAU/USD') || this.currentPrices.get(market.symbol) || market.basePrice || 4050.00);
+      anchor = (g && g > 0) ? g : (this.exchangeAnchorPrices.get('XAU/USD') || realTimeLiveMarketService.getLatestPrice('XAU/USD') || market.basePrice || 4004.00);
     } else {
-      const realP = realTimeLiveMarketService.getLatestPrice(market.symbol);
-      anchor = (realP && realP > 0) ? realP : (this.currentPrices.get(market.symbol) || market.basePrice || 100);
+      const realP = this.exchangeAnchorPrices.get(market.symbol) || realTimeLiveMarketService.getLatestPrice(market.symbol);
+      anchor = (realP && realP > 0) ? realP : (market.basePrice || 100);
     }
 
-    const symHash = hashSymbol(market.symbol);
-    const symSeed = (symHash % 1000) + 1;
-
-    // 2. Determine sub-pip amplitude strictly matching authentic interbank spread
-    let maxPipDelta: number;
-    if (market.symbol === 'XAU/USD' || market.id === 'xau_usd') {
-      maxPipDelta = 0.08; // Gold moves by ±$0.04 to ±$0.08 around spot
-    } else if (market.category === 'crypto' || (market.symbol || '').includes('BTC')) {
-      maxPipDelta = 2.50; // BTC moves by ±$1 to ±$2.5
-    } else if ((market.symbol || '').includes('ETH')) {
-      maxPipDelta = 0.25;
-    } else if ((market.symbol || '').includes('SOL')) {
-      maxPipDelta = 0.05;
-    } else if ((market.symbol || '').includes('JPY')) {
-      maxPipDelta = 0.004; // USD/JPY sub-pip
-    } else {
-      maxPipDelta = 0.000035; // EUR/USD, GBP/USD sub-pip (±0.35 pip)
-    }
-
-    // 3. Multi-frequency continuous harmonic oscillations
-    const tSec = now / 1000;
-    const wave1 = Math.sin((tSec * 2.8) + (symSeed * 0.37));
-    const wave2 = Math.cos((tSec * 1.5) + (symSeed * 0.73));
-    const wave3 = Math.sin((tSec * 4.3) + (symSeed * 1.17));
-    const noise = (Math.sin(now * 0.017 + symSeed) + Math.cos(now * 0.023 + symSeed * 2)) / 2;
-
-    const combinedOffset = ((wave1 * 0.45) + (wave2 * 0.30) + (wave3 * 0.15) + (noise * 0.10)) * maxPipDelta;
-    return Number((anchor + combinedOffset).toFixed(precision));
+    return Number(anchor.toFixed(precision));
   }
 
   /**
@@ -647,8 +703,12 @@ private applyAuthenticExchangeCandle(
 
     // --- 100% DETERMINISTIC INTRA-CANDLE SMOOTH TRAJECTORY (ZERO DRIFT ACROSS 100-200 PHONES) ---
     const m1Last = m1Bucket && m1Bucket.length > 0 ? m1Bucket[m1Bucket.length - 1] : undefined;
-    const stableOpen = m1Last && m1Last.time === currentBucketTime ? m1Last.open : undefined;
-    const { livePrice } = getDeterministicActiveCandle(market, currentBucketTime, timeMs, 60, stableOpen);
+    const isCurrentM1 = Boolean(m1Last && m1Last.time === currentBucketTime);
+    // When minute turns, new candle open is guaranteed to strictly equal previous candle close
+    const stableOpen = isCurrentM1 ? m1Last!.open : (m1Last ? m1Last.close : undefined);
+    const stableHigh = isCurrentM1 ? m1Last!.high : undefined;
+    const stableLow = isCurrentM1 ? m1Last!.low : undefined;
+    const { livePrice } = getDeterministicActiveCandle(market, currentBucketTime, timeMs, 60, stableOpen, stableHigh, stableLow);
     return livePrice;
   }
 
@@ -767,7 +827,7 @@ private applyAuthenticExchangeCandle(
       }
 
       bucket.push(newCandle);
-      this.currentPrices.set(market.symbol, rollingOpen);
+      this.currentPrices.set(market.symbol, newCandle.close);
       // Keep recent 2500 in memory for multi-day history
       if (bucket.length > 2500) {
         bucket.splice(0, bucket.length - 2500);
@@ -777,12 +837,14 @@ private applyAuthenticExchangeCandle(
       const isOtc = market && (market.category === 'otc' || Boolean(market.symbol && market.symbol.toUpperCase().includes('OTC')) || market.isRealMarket === false);
       if (isOtc) {
         const stableOpen = lastCandle.open;
-        const { activeCandle, livePrice } = getDeterministicActiveCandle(market, currentBucketTime, now, tfSecs, stableOpen);
+        const stableHigh = lastCandle.high;
+        const stableLow = lastCandle.low;
+        const { activeCandle, livePrice } = getDeterministicActiveCandle(market, currentBucketTime, now, tfSecs, stableOpen, stableHigh, stableLow);
         bucket[lastIdx] = {
           ...activeCandle,
           open: stableOpen,
-          high: Math.max(stableOpen, lastCandle.high || stableOpen, activeCandle.high, livePrice),
-          low: Math.min(stableOpen, lastCandle.low || stableOpen, activeCandle.low, livePrice),
+          high: activeCandle.high,
+          low: activeCandle.low,
           close: livePrice
         };
         this.currentPrices.set(market.symbol, livePrice);

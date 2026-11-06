@@ -12,6 +12,7 @@ import {
 } from 'firebase/firestore';
 import { KYCRequest } from '../types';
 import { safeFormatDateTime, safeGetTime } from './dateUtils';
+import { safeFetch } from './safeApi';
 
 export const INITIAL_MOCK_KYC_REQUESTS: KYCRequest[] = [];
 
@@ -342,9 +343,9 @@ export async function submitKycVerification(data: {
     console.warn('Firestore KYC submission note:', err);
   }
 
-  // Cross-device sync to server persistent store
+  // Cross-device sync to server persistent store (with timeout guard)
   try {
-    fetch('/api/users/kyc-status', {
+    safeFetch('/api/users/kyc-status', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -354,7 +355,7 @@ export async function submitKycVerification(data: {
         isVerifiedUser: false,
         kycRejectionReason: null
       })
-    }).catch(() => {});
+    }, 600).catch(() => {});
   } catch (_) {}
 
   // 4. Schedule automatic verification in 75 seconds (1.25 minutes)
@@ -452,9 +453,9 @@ export async function approveKycVerification(userUid: string, reqId?: string, is
     console.warn('Firestore KYC approval note:', err);
   }
 
-  // Cross-device sync to server persistent store so other devices immediately know
+  // Cross-device sync to server persistent store so other devices immediately know (with timeout guard)
   try {
-    fetch('/api/users/kyc-status', {
+    safeFetch('/api/users/kyc-status', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -464,7 +465,7 @@ export async function approveKycVerification(userUid: string, reqId?: string, is
         kycApprovedAt: nowStr,
         kycRejectionReason: null
       })
-    }).catch(() => {});
+    }, 600).catch(() => {});
   } catch (_) {}
 }
 
@@ -544,9 +545,9 @@ export async function rejectKycVerification(userUid: string, reason: string, req
     console.warn('Firestore KYC rejection note:', err);
   }
 
-  // Cross-device sync to server persistent store
+  // Cross-device sync to server persistent store (with timeout guard)
   try {
-    fetch('/api/users/kyc-status', {
+    safeFetch('/api/users/kyc-status', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -555,7 +556,7 @@ export async function rejectKycVerification(userUid: string, reason: string, req
         isVerifiedUser: false,
         kycRejectionReason: reason
       })
-    }).catch(() => {});
+    }, 600).catch(() => {});
   } catch (_) {}
 }
 

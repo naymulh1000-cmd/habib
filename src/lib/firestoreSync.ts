@@ -22,6 +22,7 @@ import {
 } from 'firebase/firestore';
 import { TransactionRecord, TradePosition, AccountType } from '../types';
 import { safeIsoString, safeFormatDateTime, safeGetTime, safeFormatTimeWithSeconds } from './dateUtils';
+import { safeFetch } from './safeApi';
 
 export interface UserProfileData {
   uid: string;
@@ -121,9 +122,9 @@ export const saveTradeToFirestore = async (trade: TradePosition, userUid?: strin
       updatedAt: serverTimestamp()
     }, { merge: true });
 
-    // Sync to backend persistent API as well for instantaneous cross-device availability
+    // Sync to backend persistent API as well (with timeout guard)
     try {
-      fetch('/api/users/trades', {
+      safeFetch('/api/users/trades', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -134,7 +135,7 @@ export const saveTradeToFirestore = async (trade: TradePosition, userUid?: strin
           closeTime,
           closeTimestamp
         })
-      }).catch(() => {});
+      }, 600).catch(() => {});
     } catch (_) {}
   } catch (e) {
     if (!isQuotaError(e)) {
@@ -175,13 +176,13 @@ export const saveTradesBatchToFirestore = async (
     };
   });
 
-  // 1. Send single atomic batch request to server
+  // 1. Send single atomic batch request to server (with timeout guard)
   try {
-    fetch('/api/users/trades/batch', {
+    safeFetch('/api/users/trades/batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ trades: preparedTrades })
-    }).catch(() => {});
+    }, 600).catch(() => {});
   } catch (_) {}
 
   // 2. Mirror to Firestore
@@ -352,36 +353,37 @@ export const saveUserBalancesToFirestore = async (
     localStorage.setItem('forex_pro_demo_balance', String(demoVal));
   } catch (_) {}
 
-  // Sync to Express backend for cross-device consistency across phones & desktops
+  // 1. Commit directly to Firestore (Authoritative Cloud Balance)
+  if (!isQuotaExceeded()) {
+    try {
+      const userDocRef = doc(db, 'users', uid);
+      await setDoc(userDocRef, {
+        liveBalance: liveVal,
+        bonusBalance: bonusVal,
+        demoBalance: demoVal,
+        balances: {
+          live: liveVal,
+          bonus: bonusVal,
+          demo: demoVal
+        },
+        demoBalanceUpdatedAt: nowMs,
+        balancesUpdatedAt: nowMs,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+    } catch (e) {
+      if (!isQuotaError(e)) {
+        console.warn('Firestore user balances update note:', e);
+      }
+    }
+  }
+
+  // 2. Sync to backend in background (with timeout guard)
   try {
-    fetch('/api/users/sync-balances', {
+    safeFetch('/api/users/sync-balances', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ uid, userEmail, balances: { live: liveVal, bonus: bonusVal, demo: demoVal } })
-    }).catch(() => {});
+    }, 600).catch(() => {});
   } catch (_) {}
-
-  if (isQuotaExceeded()) return;
-
-  try {
-    const userDocRef = doc(db, 'users', uid);
-    await setDoc(userDocRef, {
-      liveBalance: liveVal,
-      bonusBalance: bonusVal,
-      demoBalance: demoVal,
-      balances: {
-        live: liveVal,
-        bonus: bonusVal,
-        demo: demoVal
-      },
-      demoBalanceUpdatedAt: nowMs,
-      balancesUpdatedAt: nowMs,
-      updatedAt: serverTimestamp()
-    }, { merge: true });
-  } catch (e) {
-    if (!isQuotaError(e)) {
-      console.warn('Firestore user balances update error:', e);
-    }
-  }
 };
 

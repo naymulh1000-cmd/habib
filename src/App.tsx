@@ -4,10 +4,13 @@ import { BackgroundGlow } from './components/BackgroundGlow';
 import { EmailVerificationGate } from './components/EmailVerificationGate';
 import { ShieldCheck, ShieldAlert, Loader2, AlertTriangle, Lock, ArrowLeft } from 'lucide-react';
 
-// Eagerly import visitor views so portal, welcome page and login card render instantly in 0ms without network delays
+// Eagerly import visitor views and ForexDashboard so dashboard renders instantly on refresh/reload in 0ms
 import { PortalLandingPage } from './components/PortalLandingPage';
 import { LandingPageView } from './components/LandingPageView';
 import { GlassLoginCard } from './components/GlassLoginCard';
+import { ForexDashboard } from './components/ForexDashboard';
+import { InstantActionTransition } from './components/InstantActionTransition';
+
 const lazyWithRetry = (importFn: () => Promise<any>, exportName?: string) =>
   lazy(async () => {
     let attempts = 0;
@@ -29,19 +32,8 @@ const lazyWithRetry = (importFn: () => Promise<any>, exportName?: string) =>
     throw new Error('Module import retry limit exceeded');
   });
 
-const ForexDashboard = lazyWithRetry(() => import('./components/ForexDashboard'), 'ForexDashboard');
 const AdminLoginCard = lazyWithRetry(() => import('./components/AdminPanel/AdminLoginCard'), 'AdminLoginCard');
 const AdminDashboard = lazyWithRetry(() => import('./components/AdminPanel/AdminDashboard'), 'AdminDashboard');
-
-// Pre-trigger ForexDashboard chunk download immediately if authenticated session exists
-if (typeof window !== 'undefined') {
-  try {
-    const hasCachedUser = Object.keys(localStorage).some(k => k.startsWith('firebase:authUser:'));
-    if (hasCachedUser || auth.currentUser) {
-      import('./components/ForexDashboard').catch(() => {});
-    }
-  } catch (_) {}
-}
 
 function safeSetLocalStorage(key: string, value: string) {
   try {
@@ -72,8 +64,37 @@ function safeRemoveLocalStorage(key: string) {
   } catch (_) {}
 }
 
+// Immediate one-time startup cleanup of bloated candle caches from localStorage to guarantee zero storage-lock
+try {
+  if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('candle_cache_') || k.startsWith('market_candles_'))) {
+        localStorage.removeItem(k);
+      }
+    }
+  }
+} catch (_) {}
+
 export default function App() {
-  const [user, setUser] = useState<User | null>(() => auth.currentUser);
+  const [user, setUser] = useState<User | null>(() => {
+    if (auth.currentUser) return auth.currentUser;
+    try {
+      if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+        const authKey = Object.keys(localStorage).find(k => k.startsWith('firebase:authUser:'));
+        if (authKey) {
+          const raw = localStorage.getItem(authKey);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && parsed.uid) {
+              return parsed as User;
+            }
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  });
   const [userRole, setUserRole] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [accessDeniedMsg, setAccessDeniedMsg] = useState<string | null>(null);
@@ -146,6 +167,20 @@ export default function App() {
     }
     return 'signin';
   });
+
+  const [visitorTransition, setVisitorTransition] = useState<{
+    isOpen: boolean;
+    targetView: 'portal' | 'welcome' | 'auth';
+    targetAuthMode?: 'signin' | 'signup';
+  }>({ isOpen: false, targetView: 'portal' });
+
+  const triggerVisitorNavigation = (targetView: 'portal' | 'welcome' | 'auth', authMode?: 'signin' | 'signup') => {
+    setVisitorTransition({
+      isOpen: true,
+      targetView,
+      targetAuthMode: authMode
+    });
+  };
 
   // App Routing Mode: 'user' or 'admin'
   const [appMode, setAppMode] = useState<'user' | 'admin'>(() => {
@@ -253,7 +288,7 @@ export default function App() {
     // Only initialize market engine when user is logged in
     if (!user) return;
 
-    const delay = user ? 500 : 3500;
+    const delay = user ? 1200 : 3500;
     const timer = setTimeout(() => {
       import('./lib/customMarketEngine')
         .then(({ customMarketEngine }) => {
@@ -290,26 +325,31 @@ export default function App() {
         setUser(currentUser);
         setAuthError(null);
         if (currentUser && currentUser.email) {
-          // Guarantee that this user is recorded in server persistent storage while strictly preserving balances
-          import('./lib/userSyncHelper')
-            .then(({ syncUserRegistrationEverywhere }) => {
-              let currentLocalBal: any = null;
-              try {
-                const bStr = localStorage.getItem(`forex_pro_user_balances_${currentUser.uid}`) || localStorage.getItem('forex_pro_user_balances');
-                if (bStr) currentLocalBal = JSON.parse(bStr);
-              } catch (_) {}
+          const syncKey = `forex_synced_session_${currentUser.uid}`;
+          const isAlreadySynced = typeof sessionStorage !== 'undefined' && sessionStorage.getItem(syncKey) === 'true';
+          if (!isAlreadySynced) {
+            try { sessionStorage.setItem(syncKey, 'true'); } catch (_) {}
+            // Guarantee that this user is recorded in server persistent storage while strictly preserving balances
+            import('./lib/userSyncHelper')
+              .then(({ syncUserRegistrationEverywhere }) => {
+                let currentLocalBal: any = null;
+                try {
+                  const bStr = localStorage.getItem(`forex_pro_user_balances_${currentUser.uid}`) || localStorage.getItem('forex_pro_user_balances');
+                  if (bStr) currentLocalBal = JSON.parse(bStr);
+                } catch (_) {}
 
-              syncUserRegistrationEverywhere({
-                uid: currentUser.uid,
-                email: currentUser.email,
-                displayName: currentUser.displayName || currentUser.email.split('@')[0],
-                emailVerified: currentUser.emailVerified,
-                liveBalance: typeof currentLocalBal?.live === 'number' ? currentLocalBal.live : undefined,
-                bonusBalance: typeof currentLocalBal?.bonus === 'number' ? currentLocalBal.bonus : undefined,
-                demoBalance: typeof currentLocalBal?.demo === 'number' ? currentLocalBal.demo : undefined,
-              }).catch(() => {});
-            })
-            .catch(() => {});
+                syncUserRegistrationEverywhere({
+                  uid: currentUser.uid,
+                  email: currentUser.email,
+                  displayName: currentUser.displayName || currentUser.email.split('@')[0],
+                  emailVerified: currentUser.emailVerified,
+                  liveBalance: typeof currentLocalBal?.live === 'number' ? currentLocalBal.live : undefined,
+                  bonusBalance: typeof currentLocalBal?.bonus === 'number' ? currentLocalBal.bonus : undefined,
+                  demoBalance: typeof currentLocalBal?.demo === 'number' ? currentLocalBal.demo : undefined,
+                }).catch(() => {});
+              })
+              .catch(() => {});
+          }
         }
       },
       (error: any) => {
@@ -323,7 +363,7 @@ export default function App() {
     };
   }, []);
 
-  // Sync User Role from Firestore
+  // Sync User Role from Firestore (Instant memoized check to avoid socket connection contention)
   useEffect(() => {
     if (!user) {
       setUserRole(null);
@@ -333,55 +373,49 @@ export default function App() {
     const emailClean = (user.email || '').toLowerCase().trim();
     const isPrimaryAdmin = emailClean === 'naymulh1000@gmail.com' || emailClean === 'admin@fxby24.com' || emailClean === 'admin@forextradepro.com';
 
-    let unsub = () => {};
+    if (isPrimaryAdmin) {
+      setUserRole('super_admin');
+      return;
+    }
 
-    import('./lib/firebase').then(({ db, isQuotaExceeded, isQuotaError }) => {
+    // Check cached role first
+    try {
+      const cached = localStorage.getItem(`forex_user_role_${user.uid}`);
+      if (cached) setUserRole(cached);
+    } catch (_) {}
+
+    let isMounted = true;
+    import('./lib/firebase').then(({ db, isQuotaExceeded }) => {
       if (isQuotaExceeded()) {
-        setUserRole(isPrimaryAdmin ? 'super_admin' : 'user');
+        if (isMounted) setUserRole('user');
         return;
       }
 
-      import('firebase/firestore').then(({ doc, onSnapshot }) => {
-        try {
-          const userDocRef = doc(db, 'users', user.uid);
-          unsub = onSnapshot(userDocRef, (snap) => {
-            let fetchedRole = 'user';
-            if (snap.exists()) {
-              const data = snap.data();
-              if (data?.role) {
-                fetchedRole = data.role;
-              }
-            }
+      import('firebase/firestore').then(({ doc, getDoc }) => {
+        getDoc(doc(db, 'users', user.uid)).then(snap => {
+          if (!isMounted) return;
+          let fetchedRole = 'user';
+          if (snap.exists()) {
+            const data = snap.data();
+            if (data?.role) fetchedRole = data.role;
+          }
+          setUserRole(fetchedRole);
+          try { localStorage.setItem(`forex_user_role_${user.uid}`, fetchedRole); } catch (_) {}
 
-            if (isPrimaryAdmin) {
-              fetchedRole = 'super_admin';
-            }
-
-            setUserRole(fetchedRole);
-
-            // Security check: If current logged-in user is NOT an admin, purge any saved admin session
-            const isAdminAccount = isPrimaryAdmin || fetchedRole === 'super_admin' || fetchedRole === 'admin' || fetchedRole === 'superadmin';
-            if (!isAdminAccount) {
-              setAdminSession(null);
-              safeRemoveLocalStorage('forex_admin_session');
-            }
-          }, (err) => {
-            if (!isQuotaError(err)) {
-              console.warn('Role fetch warning:', err);
-            }
-            if (isPrimaryAdmin) {
-              setUserRole('super_admin');
-            } else {
-              setUserRole('user');
-              setAdminSession(null);
-              safeRemoveLocalStorage('forex_admin_session');
-            }
-          });
-        } catch (_) {}
+          const isAdminAccount = fetchedRole === 'super_admin' || fetchedRole === 'admin' || fetchedRole === 'superadmin';
+          if (!isAdminAccount) {
+            setAdminSession(null);
+            safeRemoveLocalStorage('forex_admin_session');
+          }
+        }).catch(() => {
+          if (isMounted) setUserRole('user');
+        });
       }).catch(() => {});
     }).catch(() => {});
 
-    return () => unsub();
+    return () => {
+      isMounted = false;
+    };
   }, [user?.uid, user?.email]);
 
   // Is Super Admin evaluation (strict check: designated email OR verified role in Firestore)
@@ -554,34 +588,50 @@ export default function App() {
   // 1. If user is not logged in and visitorView is 'portal', show the ultra-clean Exness/HFM 3D Landing Page
   if (!user && visitorView === 'portal') {
     return (
-      <PortalLandingPage
-        onGetStarted={() => setVisitorView('welcome')}
-        onOpenAuth={(mode) => {
-          setAuthInitialMode(mode);
-          setVisitorView('auth');
-        }}
-      />
+      <>
+        <InstantActionTransition
+          isOpen={visitorTransition.isOpen}
+          type="portal"
+          duration={500}
+          onComplete={() => {
+            setVisitorTransition(prev => ({ ...prev, isOpen: false }));
+            if (visitorTransition.targetAuthMode) {
+              setAuthInitialMode(visitorTransition.targetAuthMode);
+            }
+            setVisitorView(visitorTransition.targetView);
+          }}
+        />
+        <PortalLandingPage
+          onGetStarted={() => triggerVisitorNavigation('welcome')}
+          onOpenAuth={(mode) => triggerVisitorNavigation('auth', mode)}
+        />
+      </>
     );
   }
 
   // 2. If user is not logged in and visitorView is 'welcome', show the detailed Welcome Page (current LandingPageView)
   if (!user && visitorView === 'welcome') {
     return (
-      <LandingPageView
-        onOpenLogin={() => {
-          setAuthInitialMode('signin');
-          setVisitorView('auth');
-        }}
-        onOpenRegister={() => {
-          setAuthInitialMode('signup');
-          setVisitorView('auth');
-        }}
-        onOpenDemo={() => {
-          setAuthInitialMode('signup');
-          setVisitorView('auth');
-        }}
-        onBackToPortal={() => setVisitorView('portal')}
-      />
+      <>
+        <InstantActionTransition
+          isOpen={visitorTransition.isOpen}
+          type="welcome"
+          duration={500}
+          onComplete={() => {
+            setVisitorTransition(prev => ({ ...prev, isOpen: false }));
+            if (visitorTransition.targetAuthMode) {
+              setAuthInitialMode(visitorTransition.targetAuthMode);
+            }
+            setVisitorView(visitorTransition.targetView);
+          }}
+        />
+        <LandingPageView
+          onOpenLogin={() => triggerVisitorNavigation('auth', 'signin')}
+          onOpenRegister={() => triggerVisitorNavigation('auth', 'signup')}
+          onOpenDemo={() => triggerVisitorNavigation('auth', 'signup')}
+          onBackToPortal={() => triggerVisitorNavigation('portal')}
+        />
+      </>
     );
   }
 
@@ -590,35 +640,40 @@ export default function App() {
       {/* Dynamic Animated Ambient Background */}
       <BackgroundGlow />
 
+      {/* Visitor Action Transition Modal */}
+      {!user && (
+        <InstantActionTransition
+          isOpen={visitorTransition.isOpen}
+          type="portal"
+          duration={500}
+          onComplete={() => {
+            setVisitorTransition(prev => ({ ...prev, isOpen: false }));
+            setVisitorView(visitorTransition.targetView);
+          }}
+        />
+      )}
+
       {/* Main Container */}
       <main className={`relative z-10 flex-1 w-full ${user ? '' : 'flex items-center justify-center p-4 sm:p-6 my-auto'}`}>
         {user ? (
-          <Suspense fallback={
-            <div className="min-h-screen w-full bg-[#06080E] flex flex-col items-center justify-center p-6 text-center select-none">
-              <div className="w-12 h-12 rounded-2xl bg-gradient-to-b from-[#141E34] to-[#0A0E18] border border-[#F5B301]/70 flex items-center justify-center shadow-2xl shadow-[#F5B301]/30 p-2 animate-pulse mb-3">
-                <div className="w-6 h-6 rounded-full border-2 border-[#F5B301] border-t-transparent animate-spin" />
-              </div>
-              <span className="text-xs font-mono font-bold text-[#F5B301] tracking-wider uppercase animate-pulse">
-                Initializing FXBY24 Workspace...
-              </span>
-            </div>
-          }>
-            <ForexDashboard 
-              user={user} 
-              isSuperAdmin={isSuperAdmin}
-              onSwitchToAdmin={handleSwitchToAdmin}
-              onLogout={() => {
-                signOut(auth).catch((err) => console.warn('Sign out notice:', err));
-                try { sessionStorage.removeItem('forex_dashboard_synced'); } catch (_) {}
-                setUser(null);
-                setVisitorView('portal');
-              }} 
-            />
-          </Suspense>
+          <ForexDashboard 
+            user={user} 
+            isSuperAdmin={isSuperAdmin}
+            onSwitchToAdmin={handleSwitchToAdmin}
+            onLogout={() => {
+              signOut(auth).catch((err) => console.warn('Sign out notice:', err));
+              try { 
+                sessionStorage.removeItem('forex_dashboard_synced'); 
+                localStorage.removeItem('forex_dashboard_synced');
+              } catch (_) {}
+              setUser(null);
+              setVisitorView('portal');
+            }} 
+          />
         ) : (
           <GlassLoginCard 
             initialMode={authInitialMode}
-            onBackToLanding={() => setVisitorView('portal')}
+            onBackToLanding={() => triggerVisitorNavigation('portal')}
             onSuccess={() => {}} 
           />
         )}

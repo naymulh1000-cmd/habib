@@ -68,20 +68,30 @@ export async function processBonusAccountWithdrawal(
         : Number(userData.depositBonusGranted ?? (currentBonusBalance > 0 ? 250.00 : 0));
       const actualBonusGranted = Math.min(currentBonusBalance, baseGranted);
 
+      const challengeTarget = baseGranted * 2;
+      const isChallengeUnlocked = currentBonusBalance >= challengeTarget;
+
+      if (!isChallengeUnlocked) {
+        const needed = Number((challengeTarget - currentBonusBalance).toFixed(2));
+        throw new Error(`Bonus Account Challenge Locked! You must double your bonus balance to 2x ($${challengeTarget.toFixed(2)}) through trading before unlocking 50% profit withdrawals. Need $${needed.toFixed(2)} more.`);
+      }
+
       netProfit = Math.max(0, Number((currentBonusBalance - actualBonusGranted).toFixed(2)));
       const maxEligibleWithdrawal = Number((netProfit * 0.5).toFixed(2));
 
-      if (netProfit <= 0) {
-        throw new Error('Deposit bonus cannot be withdrawn directly. Only trading profit (50%) earned from bonus account is withdrawable.');
+      if (netProfit <= 0 || maxEligibleWithdrawal <= 0) {
+        throw new Error('Deposit bonus base cannot be withdrawn directly. Only trading profit (50%) earned from bonus account is withdrawable.');
       }
 
       if (amountRequested > maxEligibleWithdrawal + 0.01) {
         throw new Error(`Withdrawal amount ($${amountRequested.toFixed(2)}) exceeds 50% eligible profit limit ($${maxEligibleWithdrawal.toFixed(2)}).`);
       }
 
-      // System automatically deducts the remaining 50% profit balance
-      deductedSystemProfit = Number((netProfit - amountRequested).toFixed(2));
-      newBonusBalance = actualBonusGranted; // Reset bonus balance to base deposit bonus granted
+      // 50% user profit share is withdrawn; matching 50% profit share is deducted by the company
+      deductedSystemProfit = amountRequested;
+      const totalProfitDeduction = Number((amountRequested * 2).toFixed(2));
+      // Base deposit bonus granted (e.g. $250) is safely preserved
+      newBonusBalance = Math.max(actualBonusGranted, Number((currentBonusBalance - totalProfitDeduction).toFixed(2)));
 
       // 1. Update user's bonus account balance in Firestore
       if (userSnap.exists()) {
@@ -126,7 +136,18 @@ export async function processBonusAccountWithdrawal(
       deductedSystemProfit,
       newBonusBalance
     };
-  } catch (error) {
+  } catch (error: any) {
+    const errorMsg = error?.message || String(error);
+    // Business validation errors must NOT be recorded as fatal Firestore errors
+    if (
+      errorMsg.includes('exceeds 50% eligible profit limit') ||
+      errorMsg.includes('Deposit bonus cannot be withdrawn directly') ||
+      errorMsg.includes('trading profit (50%) earned') ||
+      errorMsg.includes('Insufficient') ||
+      errorMsg.includes('Minimum withdrawal')
+    ) {
+      throw error;
+    }
     handleFirestoreError(error, OperationType.WRITE, `users/${userUid}`);
     throw error;
   }
