@@ -72,7 +72,7 @@ import { getStoredMarkets, subscribeToMarketConfig, MarketPairConfig, getSyncedM
 import { customMarketEngine, TimeframeId } from '../lib/customMarketEngine';
 import { realTimeLiveMarketService } from '../lib/realTimeLiveMarketService';
 import { db } from '../lib/firebase';
-import { collection, addDoc, setDoc, doc, serverTimestamp, getDocs, query, where } from 'firebase/firestore';
+import { collection, addDoc, setDoc, doc, serverTimestamp, getDocs, query, where, onSnapshot } from 'firebase/firestore';
 import { saveTradeToFirestore, saveTradesBatchToFirestore, saveUserBalancesToFirestore } from '../lib/firestoreSync';
 import { resolveBinaryTrade, resolveForexTrade, registerSettledTradeIds, isTradeSettled } from '../lib/tradeSettlement';
 import { calculateUserTodayProfit, syncUserToGlobalLeaderboard } from '../lib/leaderboardService';
@@ -2483,6 +2483,110 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
     orders?: any[];
   } | null>(null);
 
+  const [adminAllActiveTrades, setAdminAllActiveTrades] = useState<any[]>([]);
+
+  // Real-Time Global Trade Synchronization for Admin Chart:
+  // When an admin account logs in, this listener immediately receives trades placed by ANY user from ANY device/network globally!
+  useEffect(() => {
+    if (!isAdminUser) return;
+    try {
+      const q = query(collection(db, 'trades'), where('status', '==', 'OPEN'));
+      const unsub = onSnapshot(q, (snapshot) => {
+        const tradesList: any[] = [];
+        const now = Date.now();
+        snapshot.forEach(docSnap => {
+          const d = docSnap.data();
+          if (!d) return;
+          // Ignore trades expired by more than 8 seconds
+          if (d.expiryTimestamp && d.expiryTimestamp < (now - 8000)) return;
+          tradesList.push({
+            id: d.id || docSnap.id,
+            userUid: d.userUid,
+            userEmail: d.userEmail,
+            displayName: d.displayName || (d.userEmail ? d.userEmail.split('@')[0] : 'Trader'),
+            symbol: d.symbol,
+            type: d.type === 'CALL' || d.type === 'BUY' || d.type === 'UP' ? 'UP' : 'DOWN',
+            amount: Number(d.amount || d.investment || 10),
+            entryPrice: Number(d.entryPrice || 0),
+            currentPrice: currentTickPrice,
+            expirySeconds: d.expirySeconds || 60,
+            remainingSeconds: d.expiryTimestamp ? Math.max(0, Math.ceil((d.expiryTimestamp - now) / 1000)) : 60,
+            openTimestamp: d.openTimestamp || (d.createdAt ? new Date(d.createdAt).getTime() : now),
+            expiryTimestamp: d.expiryTimestamp,
+            status: 'OPEN',
+            accountType: d.accountType || 'live',
+            tradingMode: d.tradingMode || 'otc',
+            category: d.category || 'binary'
+          });
+        });
+        setAdminAllActiveTrades(tradesList);
+
+        // Dynamically compute real-time market exposure and heavy dollar side directly from live user trades
+        if (activeMarket) {
+          const cleanSym = (activeMarket.symbol || '').trim().toUpperCase();
+          const symKey = cleanSym.replace(/[^A-Z0-9]/g, '');
+          const marketTrades = tradesList.filter(t => {
+            if (t.accountType === 'demo' || t.isDemo) return false;
+            const tSym = (t.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+            return tSym === symKey || symKey.includes(tSym) || tSym.includes(symKey);
+          });
+
+          let uVol = 0;
+          let dVol = 0;
+          let uSum = 0;
+          let dSum = 0;
+          marketTrades.forEach(t => {
+            const amt = Number(t.amount || 0);
+            if (t.type === 'UP') {
+              uVol += amt;
+              uSum += t.entryPrice * amt;
+            } else {
+              dVol += amt;
+              dSum += t.entryPrice * amt;
+            }
+          });
+
+          let bias: 'UP' | 'DOWN' | 'NEUTRAL' = 'NEUTRAL';
+          let heavySide: 'UP' | 'DOWN' | 'NONE' = 'NONE';
+          let heavyPrice = 0;
+          if (uVol > dVol) {
+            bias = 'DOWN'; // Heavy side took UP -> steer market DOWN
+            heavySide = 'UP';
+            heavyPrice = uVol > 0 ? uSum / uVol : 0;
+          } else if (dVol > uVol) {
+            bias = 'UP'; // Heavy side took DOWN -> steer market UP
+            heavySide = 'DOWN';
+            heavyPrice = dVol > 0 ? dSum / dVol : 0;
+          } else if (uVol > 0 && uVol === dVol) {
+            bias = 'DOWN';
+            heavySide = 'UP';
+            heavyPrice = uSum / uVol;
+          }
+
+          const isExpActive = Boolean(exposureControlEnabled && (uVol > 0 || dVol > 0) && bias !== 'NEUTRAL');
+          const expObj = {
+            symbol: activeMarket.symbol,
+            upVolume: uVol,
+            downVolume: dVol,
+            netExposure: uVol - dVol,
+            biasDirection: bias,
+            heavySide,
+            heavyEntryPrice: heavyPrice,
+            minRemainingSec: 60,
+            enabled: isExpActive,
+            totalOrders: marketTrades.length,
+            orders: marketTrades
+          };
+          setActiveMarketExposure(expObj);
+          setMarketLiveExposure(activeMarket.symbol, expObj);
+        }
+      }, (err) => {
+        console.warn('[Terminal] Admin Firestore trades sync note:', err);
+      });
+      return () => unsub();
+    } catch (_) {}
+  }, [isAdminUser, activeMarket?.symbol, exposureControlEnabled]);
+
   // Synchronize active market live exposure metrics (continuous, resilient sync)
   useEffect(() => {
     let exposureInFlight = false;
@@ -2852,11 +2956,15 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
     const handleDirectRealTick = (e: any) => {
       const tick = e.detail;
       if (!tick || !isMounted) return;
+      // Strictly ONLY for authentic real markets (NEVER apply real market ticks to OTC markets!)
+      if (activeMarket.category === 'otc' || !activeMarket.isRealMarket) return;
+
       const tickSym = (tick.symbol || '').toUpperCase().replace(/\s+/g, '');
       const activeSym = (activeMarket.symbol || '').toUpperCase().replace(/\s+/g, '');
       const activeId = (activeMarket.id || '').toUpperCase().replace(/\s+/g, '');
 
-      if (tickSym === activeSym || tickSym === activeId || activeSym.includes(tickSym) || tick.symbol === activeMarket.id) {
+      // Strict exact matching ONLY - never use fuzzy includes that would bleed EUR/USD into EUR/USD OTC
+      if (tickSym === activeSym || tickSym === activeId || tick.symbol === activeMarket.id) {
         const latestPrice = tick.price;
         if (!latestPrice || isNaN(latestPrice)) return;
 
@@ -3709,7 +3817,9 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         if (x + candleWidth < -20 || x > chartWidth + 20) return;
 
         const isLast = idx === candles.length - 1;
-        const candleClose = (isLast && typeof renderTickPrice === 'number' && Number.isFinite(renderTickPrice))
+        const isTickValid = typeof renderTickPrice === 'number' && Number.isFinite(renderTickPrice) &&
+          Math.abs(renderTickPrice - c.open) / (c.open || 1) < 0.08;
+        const candleClose = (isLast && isTickValid)
           ? renderTickPrice
           : c.close;
 
@@ -3932,31 +4042,62 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       });
     });
 
-    if (isAdminUser && activeMarketExposure?.orders && Array.isArray(activeMarketExposure.orders)) {
-      activeMarketExposure.orders.forEach(o => {
-        if (!seenTradeIds.has(o.id) && typeof o.entryPrice === 'number' && o.entryPrice > 0) {
-          seenTradeIds.add(o.id);
-          tradesToRender.push({
-            id: o.id,
-            userEmail: o.userEmail,
-            symbol: o.symbol,
-            type: o.type, // 'UP' or 'DOWN'
-            amount: o.amount,
-            entryPrice: o.entryPrice,
-            currentPrice: currentTickPrice,
-            expirySeconds: 60,
-            remainingSeconds: o.remainingSeconds,
-            openTimestamp: o.openTime ? new Date(o.openTime).getTime() : Date.now(),
-            expiryTimestamp: o.expiryTimestamp,
-            status: 'OPEN',
-            accountType: o.accountType || 'live',
-            tradingMode: 'otc',
-            category: 'binary',
-            isCurrentUser: false,
-            traderBadge: o.displayName || (o.userEmail ? o.userEmail.split('@')[0] : 'Trader')
-          });
-        }
-      });
+    if (isAdminUser) {
+      if (adminAllActiveTrades && adminAllActiveTrades.length > 0) {
+        adminAllActiveTrades.forEach(o => {
+          if (!seenTradeIds.has(o.id) && typeof o.entryPrice === 'number' && o.entryPrice > 0) {
+            seenTradeIds.add(o.id);
+            const isUser = Boolean(o.userEmail && userEmail && o.userEmail.toLowerCase().trim() === userEmail.toLowerCase().trim());
+            tradesToRender.push({
+              id: o.id,
+              userEmail: o.userEmail,
+              symbol: o.symbol,
+              type: o.type,
+              amount: o.amount,
+              entryPrice: o.entryPrice,
+              currentPrice: currentTickPrice,
+              expirySeconds: o.expirySeconds || 60,
+              remainingSeconds: o.remainingSeconds || (o.expiryTimestamp ? Math.max(0, Math.ceil((o.expiryTimestamp - Date.now()) / 1000)) : 60),
+              openTimestamp: o.openTimestamp || Date.now(),
+              expiryTimestamp: o.expiryTimestamp,
+              status: 'OPEN',
+              accountType: o.accountType || 'live',
+              tradingMode: o.tradingMode || 'otc',
+              category: o.category || 'binary',
+              isCurrentUser: isUser,
+              traderBadge: isUser ? 'You' : (o.displayName || (o.userEmail ? o.userEmail.split('@')[0] : 'Trader'))
+            });
+          }
+        });
+      }
+
+      if (activeMarketExposure?.orders && Array.isArray(activeMarketExposure.orders)) {
+        activeMarketExposure.orders.forEach(o => {
+          if (!seenTradeIds.has(o.id) && typeof o.entryPrice === 'number' && o.entryPrice > 0) {
+            seenTradeIds.add(o.id);
+            const isUser = Boolean(o.userEmail && userEmail && o.userEmail.toLowerCase().trim() === userEmail.toLowerCase().trim());
+            tradesToRender.push({
+              id: o.id,
+              userEmail: o.userEmail,
+              symbol: o.symbol,
+              type: o.type, // 'UP' or 'DOWN'
+              amount: o.amount,
+              entryPrice: o.entryPrice,
+              currentPrice: currentTickPrice,
+              expirySeconds: 60,
+              remainingSeconds: o.remainingSeconds,
+              openTimestamp: o.openTime ? new Date(o.openTime).getTime() : Date.now(),
+              expiryTimestamp: o.expiryTimestamp,
+              status: 'OPEN',
+              accountType: o.accountType || 'live',
+              tradingMode: 'otc',
+              category: 'binary',
+              isCurrentUser: isUser,
+              traderBadge: isUser ? 'You' : (o.displayName || (o.userEmail ? o.userEmail.split('@')[0] : 'Trader'))
+            });
+          }
+        });
+      }
     }
 
     const openBinaryTrades = tradesToRender.filter(t => 
@@ -8192,8 +8333,18 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
                         key={`mkt-sel-${m.id || 'm'}-${idx}`}
                         type="button"
                         onClick={() => {
+                          const warm = customMarketEngine.getCandles(m.symbol, timeframe as TimeframeId);
+                          if (warm && warm.length > 0) {
+                            setCandles(warm);
+                            const lastP = warm[warm.length - 1].close;
+                            setCurrentTickPrice(lastP);
+                            smoothTickPriceRef.current = lastP;
+                          } else {
+                            setCandles([]);
+                            setCurrentTickPrice(m.basePrice);
+                            smoothTickPriceRef.current = m.basePrice;
+                          }
                           setSelectedMarketId(m.id);
-                          setCurrentTickPrice(m.basePrice);
                           setIsMarketModalOpen(false);
                         }}
                         className={`w-full p-3 rounded-2xl border text-left flex items-center justify-between transition-all cursor-pointer ${

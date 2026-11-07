@@ -1734,7 +1734,7 @@ function loadOtcClosedCandles() {
                 const pipStep = Math.pow(10, -precision);
 
                 const body = Math.abs(c.close - c.open);
-                const maxBody = isGold ? 0.25 : isCrypto ? (c.open || 100) * 0.0002 : isJpy ? pipStep * 2.5 : pipStep * 2.0;
+                const maxBody = isGold ? 1.80 : isCrypto ? (c.open || 100) * 0.0012 : isJpy ? pipStep * 45 : pipStep * 40;
                 let cleanClose = c.close;
                 if (body > maxBody) {
                   cleanClose = c.close > c.open ? c.open + maxBody : c.open - maxBody;
@@ -1742,12 +1742,12 @@ function loadOtcClosedCandles() {
                 const cleanBody = Math.abs(cleanClose - c.open);
 
                 const maxWick = isGold
-                  ? Math.max(cleanBody * 0.25, 0.20)
+                  ? Math.max(cleanBody * 0.20, 0.25)
                   : isCrypto
-                    ? Math.max(cleanBody * 0.25, (c.open || 100) * 0.0002)
+                    ? Math.max(cleanBody * 0.20, (c.open || 100) * 0.00025)
                     : isJpy
-                      ? Math.max(cleanBody * 0.25, pipStep * 2.0)
-                      : Math.max(cleanBody * 0.25, pipStep * 1.5);
+                      ? Math.max(cleanBody * 0.20, pipStep * 5.0)
+                      : Math.max(cleanBody * 0.20, pipStep * 4.0);
 
                 const cleanHigh = Math.min(c.high, Math.max(c.open, cleanClose) + maxWick);
                 const cleanLow = Math.max(c.low, Math.min(c.open, cleanClose) - maxWick);
@@ -1919,7 +1919,7 @@ setInterval(() => {
           const isCrypto = (m.symbol || '').includes('BTC') || (m.symbol || '').includes('ETH');
           const isJpy = (m.symbol || '').includes('JPY');
           const pipStep = Math.pow(10, -(m.precision || 5));
-          const maxWick = isGold ? Math.max(body * 0.25, 0.20) : isCrypto ? Math.max(body * 0.25, (lastActive.open || 100) * 0.0002) : isJpy ? Math.max(body * 0.25, pipStep * 2.0) : Math.max(body * 0.25, pipStep * 1.5);
+          const maxWick = isGold ? Math.max(body * 0.20, 0.25) : isCrypto ? Math.max(body * 0.20, (lastActive.open || 100) * 0.00025) : isJpy ? Math.max(body * 0.20, pipStep * 5.0) : Math.max(body * 0.20, pipStep * 4.0);
 
           finalized = {
             time: prevBucketTime,
@@ -2008,18 +2008,18 @@ app.get('/api/otc-candles/:symbol/:timeframe', (req, res) => {
         const isJpy = (market.symbol || '').includes('JPY');
         const pipStep = Math.pow(10, -(market.precision || 5));
         const body = Math.abs(existing.close - existing.open);
-        const maxBody = isGold ? 0.25 : isCrypto ? (existing.open || 100) * 0.0002 : isJpy ? pipStep * 2.5 : pipStep * 2.0;
+        const maxBody = isGold ? 1.80 : isCrypto ? (existing.open || 100) * 0.0012 : isJpy ? pipStep * 45 : pipStep * 40;
         if (body > maxBody) {
           existing.close = existing.close > existing.open ? existing.open + maxBody : existing.open - maxBody;
         }
         const cleanBody = Math.abs(existing.close - existing.open);
         const maxWick = isGold
-          ? Math.max(cleanBody * 0.25, 0.20)
+          ? Math.max(cleanBody * 0.20, 0.25)
           : isCrypto
-            ? Math.max(cleanBody * 0.25, (existing.open || 100) * 0.0002)
+            ? Math.max(cleanBody * 0.20, (existing.open || 100) * 0.00025)
             : isJpy
-              ? Math.max(cleanBody * 0.25, pipStep * 2.0)
-              : Math.max(cleanBody * 0.25, pipStep * 1.5);
+              ? Math.max(cleanBody * 0.20, pipStep * 5.0)
+              : Math.max(cleanBody * 0.20, pipStep * 4.0);
 
         existing.high = Number(Math.min(existing.high, Math.max(existing.open, existing.close) + maxWick).toFixed(market.precision || 5));
         existing.low = Number(Math.max(existing.low, Math.min(existing.open, existing.close) - maxWick).toFixed(market.precision || 5));
@@ -3524,6 +3524,9 @@ app.post('/api/users/trades', (req, res) => {
     }
 
     saveStoredUserTradesServer(allTrades);
+    if (trade && trade.symbol) {
+      updateServerLiveExposureForSymbol(trade.symbol);
+    }
     return res.json({ success: true, trade });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -3552,7 +3555,23 @@ app.post('/api/users/trades/batch', (req, res) => {
     });
 
     saveStoredUserTradesServer(allTrades);
+    const symbols = new Set<string>();
+    trades.forEach((t: any) => { if (t && t.symbol) symbols.add(t.symbol); });
+    symbols.forEach(sym => updateServerLiveExposureForSymbol(sym));
     return res.json({ success: true, count: trades.length });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST update/sync exposure directly from client or admin
+app.post('/api/otc/exposure/sync', (req, res) => {
+  try {
+    const { exposure } = req.body;
+    if (exposure && exposure.symbol) {
+      setMarketLiveExposure(exposure.symbol, exposure);
+    }
+    return res.json({ success: true });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }

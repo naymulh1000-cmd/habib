@@ -122,7 +122,7 @@ export const saveTradeToFirestore = async (trade: TradePosition, userUid?: strin
       updatedAt: serverTimestamp()
     }, { merge: true });
 
-    // Sync to backend persistent API as well (with timeout guard)
+    // Sync to backend persistent API as well (with resilient network timeout)
     try {
       safeFetch('/api/users/trades', {
         method: 'POST',
@@ -135,7 +135,7 @@ export const saveTradeToFirestore = async (trade: TradePosition, userUid?: strin
           closeTime,
           closeTimestamp
         })
-      }, 600).catch(() => {});
+      }, 5000).catch(() => {});
     } catch (_) {}
   } catch (e) {
     if (!isQuotaError(e)) {
@@ -182,7 +182,7 @@ export const saveTradesBatchToFirestore = async (
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ trades: preparedTrades })
-    }, 600).catch(() => {});
+    }, 5000).catch(() => {});
   } catch (_) {}
 
   // 2. Mirror to Firestore
