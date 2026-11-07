@@ -131,9 +131,10 @@ export function resolveBinaryTrade(
   const openMs = trade.openTimestamp || (trade.timestamp ? safeGetTime(trade.timestamp, now) : now);
   const expMs = trade.expiryTimestamp || (openMs + (trade.expirySeconds || 60) * 1000);
 
-  const isWin =
-    ((trade.type === 'UP' || trade.type === 'BUY') && closePrice > trade.entryPrice) ||
-    ((trade.type === 'DOWN' || trade.type === 'SELL') && closePrice < trade.entryPrice);
+  const tType = String(trade.type || '').toUpperCase();
+  const isUp = tType === 'UP' || tType === 'BUY' || tType === 'CALL';
+  const isDown = tType === 'DOWN' || tType === 'SELL' || tType === 'PUT';
+  const isWin = (isUp && closePrice > trade.entryPrice) || (isDown && closePrice < trade.entryPrice);
   const isDraw = closePrice === trade.entryPrice;
 
   const payoutMultiplier = (trade.payoutPercent || 90) / 100;
