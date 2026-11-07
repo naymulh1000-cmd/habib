@@ -15,45 +15,53 @@ export interface BonusCategoryConfig {
   challengeTargetMultiplier: number; // 2 (100% gain / double)
   withdrawableProfitSharePercent: number; // 50%, 60%, 70%
   tag: string;
+  tagBn: string;
   terms: string;
+  termsBn: string;
 }
 
 export const BONUS_CATEGORIES: Record<BonusCategoryTier, BonusCategoryConfig> = {
   1: {
     tier: 1,
-    name: 'Starter',
+    name: 'Starter ($250 - $499)',
     nameBn: 'ক্যাটাগরি ১ (স্টার্টার)',
     minDeposit: 250,
     maxDeposit: 499,
     dailyProfitCapPercent: 5,
     challengeTargetMultiplier: 2,
     withdrawableProfitSharePercent: 50,
-    tag: '১০০% বোনাস + ডেইলি ৫% ম্যাক্স গেইন',
-    terms: 'ব্যালেন্স ডাবল না হওয়া পর্যন্ত বোনাস প্রফিট উইথড্র বন্ধ। ডাবল হওয়ার পর অ্যাকাউন্ট অ্যাক্টিভ হবে এবং পরবর্তী প্রফিটের ৫০% উইথড্রযোগ্য।'
+    tag: '100% Bonus + 5% Max Daily Gain',
+    tagBn: '১০০% বোনাস + ডেইলি ৫% ম্যাক্স গেইন',
+    terms: 'Withdrawals unlock when balance doubles (2x). Then 50% of profits are withdrawable.',
+    termsBn: 'ব্যালেন্স ডাবল না হওয়া পর্যন্ত বোনাস প্রফিট উইথড্র বন্ধ। ডাবল হওয়ার পর অ্যাকাউন্ট অ্যাক্টিভ হবে এবং পরবর্তী প্রফিটের ৫০% উইথড্রযোগ্য।'
   },
   2: {
     tier: 2,
-    name: 'Pro',
+    name: 'Pro ($500 - $999)',
     nameBn: 'ক্যাটাগরি ২ (প্রো)',
     minDeposit: 500,
     maxDeposit: 999,
     dailyProfitCapPercent: 10,
     challengeTargetMultiplier: 2,
     withdrawableProfitSharePercent: 60,
-    tag: '১০০% বোনাস + ডেইলি ১০% ম্যাক্স গেইন',
-    terms: 'ব্যালেন্স ডাবল না হওয়া পর্যন্ত বোনাস প্রফিট উইথড্র বন্ধ। ডাবল হওয়ার পর অ্যাকাউন্ট অ্যাক্টিভ হবে এবং পরবর্তী প্রফিটের ৬০% উইথড্রযোগ্য।'
+    tag: '100% Bonus + 10% Max Daily Gain',
+    tagBn: '১০০% বোনাস + ডেইলি ১০% ম্যাক্স গেইন',
+    terms: 'Withdrawals unlock when balance doubles (2x). Then 60% of profits are withdrawable.',
+    termsBn: 'ব্যালেন্স ডাবল না হওয়া পর্যন্ত বোনাস প্রফিট উইথড্র বন্ধ। ডাবল হওয়ার পর অ্যাকাউন্ট অ্যাক্টিভ হবে এবং পরবর্তী প্রফিটের ৬০% উইথড্রযোগ্য।'
   },
   3: {
     tier: 3,
-    name: 'Elite',
+    name: 'Elite ($1,000+)',
     nameBn: 'ক্যাটাগরি ৩ (এলিট)',
     minDeposit: 1000,
     maxDeposit: Infinity,
     dailyProfitCapPercent: 20,
     challengeTargetMultiplier: 2,
     withdrawableProfitSharePercent: 70,
-    tag: '১০০% বোনাস + ডেইলি ২০% ম্যাক্স গেইন',
-    terms: 'ব্যালেন্স ডাবল না হওয়া পর্যন্ত বোনাস প্রফিট উইথড্র বন্ধ। ডাবল হওয়ার পর অ্যাকাউন্ট অ্যাক্টিভ হবে এবং পরবর্তী প্রফিটের ৭০% উইথড্রযোগ্য।'
+    tag: '100% Bonus + 20% Max Daily Gain',
+    tagBn: '১০০% বোনাস + ডেইলি ২০% ম্যাক্স গেইন',
+    terms: 'Withdrawals unlock when balance doubles (2x). Then 70% of profits are withdrawable.',
+    termsBn: 'ব্যালেন্স ডাবল না হওয়া পর্যন্ত বোনাস প্রফিট উইথড্র বন্ধ। ডাবল হওয়ার পর অ্যাকাউন্ট অ্যাক্টিভ হবে এবং পরবর্তী প্রফিটের ৭০% উইথড্রযোগ্য।'
   }
 };
 

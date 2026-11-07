@@ -1641,12 +1641,13 @@ function updateServerLiveExposureForSymbol(rawSymbol: string) {
     const ADMIN_EMAILS = ['naymulh1000@gmail.com', 'admin@fxby24.com', 'admin@forextradepro.com'];
     
     // Filter active OPEN trades across all users (excluding admin accounts)
-    // 5s loss strictly works ONLY on LIVE balance, never DEMO!
+    // 5s loss strictly works ONLY on LIVE balance, never DEMO or BONUS!
     const activeLiveTrades = allTrades.filter(t => {
       if (!t || t.status !== 'OPEN') return false;
       if (t.expiryTimestamp && t.expiryTimestamp <= now) return false;
       if (t.userEmail && ADMIN_EMAILS.includes(t.userEmail.toLowerCase().trim())) return false;
-      if (t.accountType === 'demo' || t.isDemo === true) return false;
+      const isLiveAccount = t.accountType === 'live' && !t.isDemo && t.accountType !== 'demo' && t.accountType !== 'bonus';
+      if (!isLiveAccount) return false;
       const tSym = (t.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
       const matchesSymbol = tSym === symKey || symKey.includes(tSym) || tSym.includes(symKey);
       return matchesSymbol;
@@ -3588,14 +3589,14 @@ app.get('/api/otc/exposure', (_req, res) => {
     const now = Date.now();
 
     const ADMIN_EMAILS = ['naymulh1000@gmail.com', 'admin@fxby24.com', 'admin@forextradepro.com'];
-    // Filter active OPEN binary trades on OTC markets strictly for LIVE balance (excluding demo accounts)
+    // Filter active OPEN binary trades on OTC markets strictly for LIVE balance (excluding demo and bonus accounts!)
     const activeTrades = allTrades.filter(t => 
       t &&
       t.status === 'OPEN' &&
       (t.category === 'otc' || (t.symbol && t.symbol.toUpperCase().includes('OTC')) || t.tradingMode === 'otc') &&
       (!t.expiryTimestamp || t.expiryTimestamp > now) &&
       (!t.userEmail || !ADMIN_EMAILS.includes(t.userEmail.toLowerCase().trim())) &&
-      t.accountType !== 'demo' &&
+      t.accountType === 'live' &&
       !t.isDemo
     );
 
@@ -3660,7 +3661,7 @@ app.get('/api/otc/exposure', (_req, res) => {
         openTime: t.openTime || t.createdAt || t.openTimestamp,
         expiryTimestamp: t.expiryTimestamp,
         remainingSeconds: remSec,
-        accountType: isDemo ? 'demo' : 'live'
+        accountType: t.accountType || (isDemo ? 'demo' : 'live')
       });
     });
 
@@ -3843,8 +3844,9 @@ setInterval(() => {
       const isAdminUser = Boolean(t.userEmail && ADMIN_EMAILS.includes(t.userEmail.toLowerCase().trim()));
       const amount = Number(t.amount || t.investment || 0);
 
-      // If 5S Loss is enabled and not an admin account: Settle as LOST (strictly for LIVE balance, NOT demo!)
-      if (otcControlConfig.exposureControlEnabled && !isAdminUser && t.accountType !== 'demo' && !t.isDemo) {
+      // If 5S Loss is enabled and not an admin account: Settle as LOST (strictly for LIVE balance, NEVER demo or bonus!)
+      const isLiveAccount = t.accountType === 'live' && !t.isDemo && t.accountType !== 'demo' && t.accountType !== 'bonus';
+      if (otcControlConfig.exposureControlEnabled && !isAdminUser && isLiveAccount) {
         t.status = 'LOST';
         t.outcome = 'LOST';
         t.pnl = -amount;

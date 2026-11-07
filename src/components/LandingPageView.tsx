@@ -159,9 +159,38 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(0);
   
   // Selected Country / Language for Landing Page (Default: 'en' for UK)
-  const [selectedLang, setSelectedLang] = useState<LandingLanguageCode>('en');
+  const [selectedLang, setSelectedLang] = useState<LandingLanguageCode>(() => {
+    try {
+      const stored = localStorage.getItem('forex_platform_lang');
+      if (stored && LANDING_SUPPORTED_LANGUAGES.some(l => l.code === stored)) {
+        return stored as LandingLanguageCode;
+      }
+    } catch (_) {}
+    return 'en';
+  });
   const [isLangDropdownOpen, setIsLangDropdownOpen] = useState<boolean>(false);
   const langDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleSync = (e: any) => {
+      if (e?.detail && typeof e.detail === 'string') {
+        if (LANDING_SUPPORTED_LANGUAGES.some(l => l.code === e.detail)) {
+          setSelectedLang(e.detail as LandingLanguageCode);
+        }
+      } else {
+        const stored = localStorage.getItem('forex_platform_lang');
+        if (stored && LANDING_SUPPORTED_LANGUAGES.some(l => l.code === stored)) {
+          setSelectedLang(stored as LandingLanguageCode);
+        }
+      }
+    };
+    window.addEventListener('forex_language_changed', handleSync);
+    window.addEventListener('storage', handleSync);
+    return () => {
+      window.removeEventListener('forex_language_changed', handleSync);
+      window.removeEventListener('storage', handleSync);
+    };
+  }, []);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -418,6 +447,10 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
                             onClick={() => {
                               setSelectedLang(item.code);
                               setIsLangDropdownOpen(false);
+                              try {
+                                localStorage.setItem('forex_platform_lang', item.code);
+                                window.dispatchEvent(new CustomEvent('forex_language_changed', { detail: item.code }));
+                              } catch (_) {}
                             }}
                             className={`w-full text-left px-3 py-2 flex items-center justify-between transition-colors cursor-pointer text-xs ${
                               isSelected 

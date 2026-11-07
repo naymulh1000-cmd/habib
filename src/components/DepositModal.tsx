@@ -146,8 +146,38 @@ export const DepositModal: React.FC<DepositModalProps> = ({
   const actualBonusAmount = (isEligibleForBonus && claimBonus) ? numAmount : 0;
 
   // Language state for Bonus section (Default is strictly English as requested)
-  const [bonusLang, setBonusLang] = useState<'en' | 'bn' | 'hi' | 'ar' | 'es' | 'pt'>('en');
+  const [bonusLang, setBonusLang] = useState<'en' | 'bn' | 'hi' | 'ar' | 'es' | 'pt'>(() => {
+    try {
+      const stored = localStorage.getItem('forex_platform_lang');
+      if (stored === 'bn' || stored === 'hi' || stored === 'ar' || stored === 'es' || stored === 'pt') {
+        return stored;
+      }
+    } catch (_) {}
+    return 'en';
+  });
   const [isLangMenuOpen, setIsLangMenuOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleSync = (e: any) => {
+      if (e?.detail && typeof e.detail === 'string') {
+        setBonusLang(e.detail);
+      } else {
+        const stored = localStorage.getItem('forex_platform_lang');
+        if (stored === 'bn' || stored === 'hi' || stored === 'ar' || stored === 'es' || stored === 'pt') {
+          setBonusLang(stored);
+        } else {
+          setBonusLang('en');
+        }
+      }
+    };
+    window.addEventListener('forex_language_changed', handleSync);
+    window.addEventListener('storage', handleSync);
+    return () => {
+      window.removeEventListener('forex_language_changed', handleSync);
+      window.removeEventListener('storage', handleSync);
+    };
+  }, []);
+
   const currentLangMeta = BONUS_LANGUAGES.find(l => l.code === bonusLang) || BONUS_LANGUAGES[0];
   const t = BONUS_TRANSLATIONS[bonusLang] || BONUS_TRANSLATIONS.en;
 
@@ -169,7 +199,7 @@ export const DepositModal: React.FC<DepositModalProps> = ({
 
   const handleProceedToCheckout = () => {
     if (numAmount < MIN_DEPOSIT_LIMIT) {
-      setErrorMsg(`মিনিমাম ডিপোজিট $১০০ (Minimum deposit is $${MIN_DEPOSIT_LIMIT} USD)`);
+      setErrorMsg(bonusLang === 'bn' ? `মিনিমাম ডিপোজিট $১০০ (Minimum deposit is $${MIN_DEPOSIT_LIMIT} USD)` : `Minimum deposit is $${MIN_DEPOSIT_LIMIT} USD`);
       return;
     }
     setErrorMsg(null);
@@ -425,7 +455,7 @@ export const DepositModal: React.FC<DepositModalProps> = ({
                 {isBelowMin && (
                   <div className="mt-1 flex items-center gap-1.5 text-xs font-bold text-rose-600 bg-rose-50 px-3 py-1.5 rounded-xl border border-rose-200">
                     <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
-                    <span>মিনিমাম ডিপোজিট $১০০ (Minimum deposit is $100 USD)</span>
+                    <span>{bonusLang === 'bn' ? 'মিনিমাম ডিপোজিট $১০০ (Minimum deposit is $100 USD)' : 'Minimum deposit is $100 USD'}</span>
                   </div>
                 )}
 
@@ -485,6 +515,10 @@ export const DepositModal: React.FC<DepositModalProps> = ({
                             onClick={() => {
                               setBonusLang(lang.code);
                               setIsLangMenuOpen(false);
+                              try {
+                                localStorage.setItem('forex_platform_lang', lang.code);
+                                window.dispatchEvent(new CustomEvent('forex_language_changed', { detail: lang.code }));
+                              } catch (_) {}
                             }}
                             className={`w-full px-3 py-2 flex items-center justify-between text-xs transition-colors cursor-pointer ${
                               bonusLang === lang.code ? 'bg-blue-50 text-[#0066FF] font-bold' : 'text-slate-700 hover:bg-slate-50'
@@ -662,7 +696,7 @@ export const DepositModal: React.FC<DepositModalProps> = ({
                     : 'bg-[#0066FF] hover:bg-[#0052FF] active:scale-[0.99] text-white shadow-blue-600/25 cursor-pointer'
                 }`}
               >
-                <span>{isBelowMin ? 'মিনিমাম ডিপোজিট $১০০ পূরণ করুন' : 'Deposit Now'}</span>
+                <span>{isBelowMin ? (bonusLang === 'bn' ? 'মিনিমাম ডিপোজিট $১০০ পূরণ করুন' : 'Minimum deposit is $100') : 'Deposit Now'}</span>
                 <ArrowRight className="w-5 h-5" />
               </button>
 

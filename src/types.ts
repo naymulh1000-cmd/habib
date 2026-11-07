@@ -67,6 +67,7 @@ export interface TradePosition {
   userUid?: string;
   userEmail?: string;
   accountType: AccountType;
+  isDemo?: boolean;
   category?: 'forex' | 'crypto' | 'binary';
   tradingMode?: 'forex' | 'otc';
   pair?: string;

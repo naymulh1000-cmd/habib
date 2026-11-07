@@ -96,6 +96,7 @@ export const saveTradeToFirestore = async (trade: TradePosition, userUid?: strin
       userUid: userUid || trade.userUid || 'anonymous',
       userEmail: userEmail || trade.userEmail || 'trader@forexpro.com',
       accountType: trade.accountType || 'live',
+      isDemo: trade.accountType === 'demo' || (trade as any).isDemo === true,
       tradingMode: trade.tradingMode || 'forex',
       category: trade.category || (trade.tradingMode === 'otc' ? 'binary' : 'forex'),
       symbol: trade.symbol,

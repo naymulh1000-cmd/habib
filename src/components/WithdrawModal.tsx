@@ -125,8 +125,38 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({
   const numAmount = parseFloat(amountInput) || 0;
 
   // Language for Bonus section (Default strictly English 'en' as requested)
-  const [bonusLang, setBonusLang] = useState<'en' | 'bn' | 'hi' | 'ar' | 'es' | 'pt'>('en');
+  const [bonusLang, setBonusLang] = useState<'en' | 'bn' | 'hi' | 'ar' | 'es' | 'pt'>(() => {
+    try {
+      const stored = localStorage.getItem('forex_platform_lang');
+      if (stored === 'bn' || stored === 'hi' || stored === 'ar' || stored === 'es' || stored === 'pt') {
+        return stored;
+      }
+    } catch (_) {}
+    return 'en';
+  });
   const [isLangMenuOpen, setIsLangMenuOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleSync = (e: any) => {
+      if (e?.detail && typeof e.detail === 'string') {
+        setBonusLang(e.detail);
+      } else {
+        const stored = localStorage.getItem('forex_platform_lang');
+        if (stored === 'bn' || stored === 'hi' || stored === 'ar' || stored === 'es' || stored === 'pt') {
+          setBonusLang(stored);
+        } else {
+          setBonusLang('en');
+        }
+      }
+    };
+    window.addEventListener('forex_language_changed', handleSync);
+    window.addEventListener('storage', handleSync);
+    return () => {
+      window.removeEventListener('forex_language_changed', handleSync);
+      window.removeEventListener('storage', handleSync);
+    };
+  }, []);
+
   const currentLangMeta = BONUS_LANGUAGES.find(l => l.code === bonusLang) || BONUS_LANGUAGES[0];
   const wt = WITHDRAW_BONUS_TRANSLATIONS[bonusLang] || WITHDRAW_BONUS_TRANSLATIONS.en;
 
@@ -453,6 +483,10 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({
                                 onClick={() => {
                                   setBonusLang(lang.code);
                                   setIsLangMenuOpen(false);
+                                  try {
+                                    localStorage.setItem('forex_platform_lang', lang.code);
+                                    window.dispatchEvent(new CustomEvent('forex_language_changed', { detail: lang.code }));
+                                  } catch (_) {}
                                 }}
                                 className={`w-full px-3 py-1.5 flex items-center justify-between text-xs transition-colors cursor-pointer ${
                                   bonusLang === lang.code ? 'bg-blue-50 text-[#0066FF] font-bold' : 'text-slate-700 hover:bg-slate-50'

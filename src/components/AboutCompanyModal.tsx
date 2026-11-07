@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Building2, 
   ShieldCheck, 
@@ -766,9 +766,38 @@ interface AboutCompanyModalProps {
 }
 
 export const AboutCompanyModal: React.FC<AboutCompanyModalProps> = ({ isOpen, onClose }) => {
-  const [selectedLanguage, setSelectedLanguage] = useState<LanguageCode>('en');
+  const [selectedLanguage, setSelectedLanguage] = useState<LanguageCode>(() => {
+    try {
+      const stored = localStorage.getItem('forex_platform_lang');
+      if (stored && SUPPORTED_LANGUAGES.some(l => l.code === stored)) {
+        return stored as LanguageCode;
+      }
+    } catch (_) {}
+    return 'en';
+  });
   const [openDropdown, setOpenDropdown] = useState(false);
   const [expandedQA, setExpandedQA] = useState<number | null>(1);
+
+  useEffect(() => {
+    const handleSync = (e: any) => {
+      if (e?.detail && typeof e.detail === 'string') {
+        if (SUPPORTED_LANGUAGES.some(l => l.code === e.detail)) {
+          setSelectedLanguage(e.detail as LanguageCode);
+        }
+      } else {
+        const stored = localStorage.getItem('forex_platform_lang');
+        if (stored && SUPPORTED_LANGUAGES.some(l => l.code === stored)) {
+          setSelectedLanguage(stored as LanguageCode);
+        }
+      }
+    };
+    window.addEventListener('forex_language_changed', handleSync);
+    window.addEventListener('storage', handleSync);
+    return () => {
+      window.removeEventListener('forex_language_changed', handleSync);
+      window.removeEventListener('storage', handleSync);
+    };
+  }, []);
 
   if (!isOpen) return null;
 
@@ -837,6 +866,10 @@ export const AboutCompanyModal: React.FC<AboutCompanyModalProps> = ({ isOpen, on
                       onClick={() => {
                         setSelectedLanguage(lang.code);
                         setOpenDropdown(false);
+                        try {
+                          localStorage.setItem('forex_platform_lang', lang.code);
+                          window.dispatchEvent(new CustomEvent('forex_language_changed', { detail: lang.code }));
+                        } catch (_) {}
                       }}
                       className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
                         selectedLanguage === lang.code

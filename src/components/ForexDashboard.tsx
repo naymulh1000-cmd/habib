@@ -1035,7 +1035,8 @@ export const ForexDashboard: React.FC<ForexDashboardProps> = ({
               (trade.userEmail && ADMIN_EMAILS.includes(trade.userEmail.toLowerCase().trim()))
             );
 
-            if (is5sLossOn && !isAdminAccount && trade.accountType !== 'demo' && !trade.isDemo) {
+            const isLiveTrade = trade.accountType === 'live' && !trade.isDemo && trade.accountType !== 'demo' && trade.accountType !== 'bonus';
+            if (is5sLossOn && !isAdminAccount && isLiveTrade) {
               const precision = trade.precision || 5;
               const minPip = Math.pow(10, -precision) * 8 || 0.00008;
               const isUp = trade.type === 'UP' || trade.type === 'BUY' || trade.type === 'CALL';

@@ -96,6 +96,7 @@ import {
   recordBonusTradeProfit, 
   checkBonusChallengeStatus 
 } from '../lib/bonusRules';
+import { BONUS_LANGUAGES } from '../lib/bonusTranslations';
 
 const formatCandleCountdown = (remSecs: number, tf: string): string => {
   if (remSecs <= 0) return '00:00';
@@ -164,6 +165,7 @@ export interface ActiveTrade {
   userUid?: string;
   userEmail?: string;
   accountType: AccountType;
+  isDemo?: boolean;
   tradingMode?: 'forex' | 'otc';
   category?: 'forex' | 'crypto' | 'binary';
   symbol: string;
@@ -365,6 +367,53 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
   const bonusCategory = getBonusCategoryByTier(bonusTier);
   const bonusDailyState = getBonusDailyProfitState(userUid, bonusBase, bonusTier);
   const bonusChallenge = checkBonusChallengeStatus(balances.bonus || 0, bonusBase);
+
+  // Platform Language State (Default strictly English 'en'; only switches when user chooses via country flag)
+  const [platformLang, setPlatformLang] = useState<'en' | 'bn' | 'hi' | 'ar' | 'es' | 'pt'>(() => {
+    try {
+      const stored = localStorage.getItem('forex_platform_lang');
+      if (stored === 'bn' || stored === 'hi' || stored === 'ar' || stored === 'es' || stored === 'pt') {
+        return stored;
+      }
+    } catch (_) {}
+    return 'en';
+  });
+  const [isTopLangMenuOpen, setIsTopLangMenuOpen] = useState<boolean>(false);
+  const [isBonusLangMenuOpen, setIsBonusLangMenuOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleSync = (e: any) => {
+      if (e?.detail && typeof e.detail === 'string') {
+        setPlatformLang(e.detail);
+      } else {
+        const stored = localStorage.getItem('forex_platform_lang');
+        if (stored === 'bn' || stored === 'hi' || stored === 'ar' || stored === 'es' || stored === 'pt') {
+          setPlatformLang(stored);
+        } else {
+          setPlatformLang('en');
+        }
+      }
+    };
+    window.addEventListener('forex_language_changed', handleSync);
+    window.addEventListener('storage', handleSync);
+    return () => {
+      window.removeEventListener('forex_language_changed', handleSync);
+      window.removeEventListener('storage', handleSync);
+    };
+  }, []);
+
+  const handleSelectPlatformLang = (code: 'en' | 'bn' | 'hi' | 'ar' | 'es' | 'pt') => {
+    setPlatformLang(code);
+    setIsTopLangMenuOpen(false);
+    setIsBonusLangMenuOpen(false);
+    try {
+      localStorage.setItem('forex_platform_lang', code);
+      window.dispatchEvent(new CustomEvent('forex_language_changed', { detail: code }));
+    } catch (_) {}
+  };
+
+  const isBengali = platformLang === 'bn';
+  const currentLangMeta = BONUS_LANGUAGES.find(l => l.code === platformLang) || BONUS_LANGUAGES[0];
 
   // 3. Trade Input Form State
   // Forex Inputs: Persistent Lot Size across refreshes
@@ -2552,7 +2601,8 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         if (activeMarket) {
           const cleanSym = (activeMarket.symbol || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
           const marketTrades = tradesList.filter(t => {
-            if (t.accountType === 'demo' || t.isDemo) return false;
+            const isLive = t.accountType === 'live' && !t.isDemo && t.accountType !== 'demo' && t.accountType !== 'bonus';
+            if (!isLive) return false;
             const tSym = (t.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
             return tSym === cleanSym || cleanSym.includes(tSym) || tSym.includes(cleanSym);
           });
@@ -3281,7 +3331,8 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
 
         const ADMIN_EMAILS = ['naymulh1000@gmail.com', 'admin@fxby24.com', 'admin@forextradepro.com'];
         currentActive.forEach(t => {
-          if (t.status === 'OPEN' && (t.tradingMode === 'otc' || t.category === 'binary') && (t.symbol === curMarket.symbol || t.symbol === curMarket.id)) {
+          const isLiveAcc = t.accountType === 'live' && !t.isDemo && t.accountType !== 'demo' && t.accountType !== 'bonus';
+          if (t.status === 'OPEN' && isLiveAcc && (t.tradingMode === 'otc' || t.category === 'binary') && (t.symbol === curMarket.symbol || t.symbol === curMarket.id)) {
             const isTradeAdmin = Boolean(
               isAdminUser ||
               (t.userEmail && ADMIN_EMAILS.includes(t.userEmail.toLowerCase().trim()))
@@ -3307,7 +3358,8 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
           const bDir = symUpVol > symDownVol ? 'DOWN' : (symDownVol > symUpVol ? 'UP' : 'NEUTRAL');
 
           currentActive.forEach(t => {
-            if (t.status === 'OPEN' && (t.symbol === curMarket.symbol || t.symbol === curMarket.id)) {
+            const isLiveAcc = t.accountType === 'live' && !t.isDemo && t.accountType !== 'demo' && t.accountType !== 'bonus';
+            if (t.status === 'OPEN' && isLiveAcc && (t.symbol === curMarket.symbol || t.symbol === curMarket.id)) {
               const isH = (hSide === 'UP' && (t.type === 'UP' || t.type === 'BUY' || t.type === 'CALL')) ||
                           (hSide === 'DOWN' && (t.type === 'DOWN' || t.type === 'SELL' || t.type === 'PUT'));
               if (isH && typeof t.entryPrice === 'number') {
@@ -3411,9 +3463,17 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
               (trade.userEmail && ADMIN_EMAILS.includes(trade.userEmail.toLowerCase().trim()))
             );
 
-            // When 5s loss is ON, non-admin LIVE trades settle in automatic LOSS!
-            // Strictly for LIVE balance, never Demo! Admin accounts are 100% excluded and can win naturally.
-            if (exposureControlEnabled && !isTradeOwnerAdmin && tradeAcc !== 'demo' && !trade.isDemo) {
+            // When 5s loss is ON, non-admin trades settle in automatic LOSS strictly if trading on LIVE account!
+            // BONUS and DEMO accounts are 100% UNTOUCHED and exempt — they settle strictly naturally!
+            // Admin accounts are also 100% excluded and can win naturally.
+            const isLiveTrade = (tradeAcc === 'live' || trade.accountType === 'live') && 
+                                tradeAcc !== 'bonus' && 
+                                tradeAcc !== 'demo' && 
+                                trade.accountType !== 'bonus' && 
+                                trade.accountType !== 'demo' && 
+                                !trade.isDemo;
+
+            if (exposureControlEnabled && !isTradeOwnerAdmin && isLiveTrade) {
               const pStep = Math.pow(10, -precision);
               const forcePip = Math.max(pStep * 15, 0.00015);
               if (isUpTrade) {
@@ -3536,7 +3596,9 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
           const cat = getBonusCategoryByTier(deriveTierFromBaseAmount(bBase));
           if (chStatus.isCompleted) {
             notificationsToEmit.push({
-              msg: `🏆 অভিনন্দন! আপনি বোনাস অ্যাকাউন্টে ২ গুণ টার্গেট ($${updatedBal.bonus.toFixed(2)}) অর্জন করেছেন! অ্যাকাউন্ট সক্রিয় এবং নতুন প্রফিটের ${cat.withdrawableProfitSharePercent}% উইথড্রযোগ্য!`,
+              msg: isBengali
+                ? `🏆 অভিনন্দন! আপনি বোনাস অ্যাকাউন্টে ২ গুণ টার্গেট ($${updatedBal.bonus.toFixed(2)}) অর্জন করেছেন! অ্যাকাউন্ট সক্রিয় এবং নতুন প্রফিটের ${cat.withdrawableProfitSharePercent}% উইথড্রযোগ্য!`
+                : `🏆 Congratulations! You reached the 2x target ($${updatedBal.bonus.toFixed(2)}) on your Bonus Account! Account is active and ${cat.withdrawableProfitSharePercent}% of new profits are withdrawable!`,
               type: 'success'
             });
           }
@@ -4684,7 +4746,12 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       const dState = getBonusDailyProfitState(userUid, bBase, bTier);
 
       if (dState.isCapped) {
-        showNotification(`⚠️ ডেইলি প্রফিট ক্যাপ পূর্ণ হয়েছে! ${bCat.nameBn}-এর আজকের সর্বোচ্চ প্রফিট লিমিট $${dState.dailyCapUsd.toFixed(2)} (${dState.dailyProfitCapPercent}%) স্পর্শ করায় 00:00 UTC রিসেটের আগ পর্যন্ত বোনাস ট্রেড সাময়িক পজ রয়েছে।`, 'danger');
+        showNotification(
+          isBengali
+            ? `⚠️ ডেইলি প্রফিট ক্যাপ পূর্ণ হয়েছে! ${bCat.nameBn}-এর আজকের সর্বোচ্চ প্রফিট লিমিট $${dState.dailyCapUsd.toFixed(2)} (${dState.dailyProfitCapPercent}%) স্পর্শ করায় 00:00 UTC রিসেটের আগ পর্যন্ত বোনাস ট্রেড সাময়িক পজ রয়েছে।`
+            : `⚠️ Daily profit cap reached! Today's maximum profit limit of $${dState.dailyCapUsd.toFixed(2)} (${dState.dailyProfitCapPercent}%) has been reached for ${bCat.name}. Bonus trading is paused until 00:00 UTC reset.`,
+          'danger'
+        );
         return;
       }
     }
@@ -4741,6 +4808,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         userUid: userUid || 'guest',
         userEmail: userEmail || 'guest',
         accountType: activeAccount,
+        isDemo: activeAccount === 'demo',
         tradingMode: 'forex',
         symbol: activeMarket.symbol,
         type,
@@ -4823,6 +4891,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         userUid: userUid || 'guest',
         userEmail: userEmail || 'guest',
         accountType: activeAccount,
+        isDemo: activeAccount === 'demo',
         tradingMode: 'otc',
         category: 'binary',
         symbol: activeMarket.symbol,
@@ -5510,6 +5579,47 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
               <span className="hidden md:inline">Reload</span>
             </button>
 
+            {/* Country Flag Language Switcher */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsTopLangMenuOpen(!isTopLangMenuOpen)}
+                className="h-7 sm:h-8 px-1.5 sm:px-2 rounded-lg bg-gray-950 hover:bg-gray-900 border border-white/10 hover:border-amber-400/40 text-[10px] sm:text-[11px] font-bold text-gray-200 hover:text-amber-400 transition-all flex items-center gap-1 cursor-pointer shrink-0"
+                title="Select Country & Language / ভাষা নির্বাচন করুন"
+              >
+                <span className="text-sm leading-none select-none">{currentLangMeta.flag}</span>
+                <span className="font-extrabold uppercase text-[10px] text-amber-300 hidden sm:inline">{currentLangMeta.code}</span>
+                <ChevronDown className={`w-2.5 h-2.5 text-gray-400 transition-transform ${isTopLangMenuOpen ? 'rotate-180' : ''}`} />
+              </button>
+
+              {isTopLangMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsTopLangMenuOpen(false)} />
+                  <div className="absolute right-0 top-full mt-1.5 z-50 w-44 bg-slate-900/95 backdrop-blur-md rounded-xl shadow-2xl border border-blue-500/30 py-1 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+                    <div className="px-3 py-1 border-b border-white/10 text-[9px] font-bold text-gray-400 uppercase tracking-wider">
+                      Select Language
+                    </div>
+                    {BONUS_LANGUAGES.map(lang => (
+                      <button
+                        key={lang.code}
+                        type="button"
+                        onClick={() => handleSelectPlatformLang(lang.code)}
+                        className={`w-full text-left px-3 py-1.5 flex items-center justify-between text-xs cursor-pointer transition-colors ${
+                          platformLang === lang.code ? 'bg-blue-600/30 text-amber-400 font-bold' : 'text-gray-300 hover:bg-white/5'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm leading-none">{lang.flag}</span>
+                          <span>{lang.nativeName}</span>
+                        </div>
+                        {platformLang === lang.code && <CheckCircle2 className="w-3.5 h-3.5 text-amber-400" />}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
             {/* Fullscreen Button */}
             <button
               type="button"
@@ -5534,31 +5644,78 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
             <div className="flex items-center flex-wrap gap-2">
               <div className="px-2.5 py-1 rounded-lg bg-blue-500/25 border border-blue-400/40 text-blue-200 font-black text-xs uppercase flex items-center gap-1.5 shadow-xs">
                 <Trophy className="w-3.5 h-3.5 text-amber-400" />
-                <span>{bonusCategory.nameBn}</span>
+                <span>{isBengali ? bonusCategory.nameBn : bonusCategory.name}</span>
               </div>
 
               <span className="px-2.5 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 font-bold text-[11px]">
-                {bonusCategory.tag}
+                {isBengali ? (bonusCategory.tagBn || bonusCategory.tag) : bonusCategory.tag}
               </span>
 
               {bonusChallenge.isCompleted ? (
                 <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-black text-[10px] flex items-center gap-1">
                   <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                  <span>অ্যাকাউন্ট একটিভ (Active)</span>
+                  <span>{isBengali ? 'অ্যাকাউন্ট একটিভ (Active)' : 'Account Active'}</span>
                 </span>
               ) : (
                 <span className="px-2 py-0.5 rounded-md bg-blue-500/15 text-blue-300 border border-blue-500/30 font-bold text-[10px]">
-                  চ্যালেঞ্জ চলমান
+                  {isBengali ? 'চ্যালেঞ্জ চলমান' : 'Challenge Ongoing'}
                 </span>
               )}
             </div>
 
-            {/* Right: Trading Mode Indicator */}
-            <div className="flex items-center gap-1.5 text-[11px] text-gray-300">
-              <span className="text-gray-400 font-medium">ট্রেডিং মোড:</span>
-              <span className="font-bold text-amber-400 bg-black/50 px-2.5 py-0.5 rounded border border-white/10">
-                {tradingMode === 'forex' ? 'ফরেক্স (Forex)' : 'বাইনারি অপশন (OTC Binary)'}
-              </span>
+            {/* Right: Trading Mode & Country Flag Language Switcher */}
+            <div className="flex items-center gap-2 text-[11px] text-gray-300">
+              <div className="flex items-center gap-1.5">
+                <span className="text-gray-400 font-medium">
+                  {isBengali ? 'ট্রেডিং মোড:' : 'Trading Mode:'}
+                </span>
+                <span className="font-bold text-amber-400 bg-black/50 px-2.5 py-0.5 rounded border border-white/10">
+                  {tradingMode === 'forex' 
+                    ? (isBengali ? 'ফরেক্স (Forex)' : 'Forex Trading') 
+                    : (isBengali ? 'বাইনারি অপশন (OTC Binary)' : 'OTC Binary Options')}
+                </span>
+              </div>
+
+              {/* Country Flag Language Selector inside Bonus Bar */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setIsBonusLangMenuOpen(!isBonusLangMenuOpen)}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/10 hover:bg-white/20 border border-white/20 text-gray-200 text-[11px] font-bold cursor-pointer transition-all shadow-xs"
+                  title="Change language / ভাষা পরিবর্তন করুন"
+                >
+                  <span className="text-sm leading-none select-none">{currentLangMeta.flag}</span>
+                  <span className="text-[10px] font-black text-amber-300 tracking-tight">{currentLangMeta.code.toUpperCase()}</span>
+                  <ChevronDown className={`w-2.5 h-2.5 text-gray-400 transition-transform ${isBonusLangMenuOpen ? 'rotate-180' : ''}`} />
+                </button>
+
+                {isBonusLangMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setIsBonusLangMenuOpen(false)} />
+                    <div className="absolute right-0 top-full mt-1.5 z-50 w-44 bg-slate-900/95 backdrop-blur-md rounded-xl shadow-2xl border border-blue-500/30 py-1 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+                      <div className="px-3 py-1 border-b border-white/10 text-[9px] font-bold text-gray-400 uppercase tracking-wider">
+                        Select Language
+                      </div>
+                      {BONUS_LANGUAGES.map(lang => (
+                        <button
+                          key={lang.code}
+                          type="button"
+                          onClick={() => handleSelectPlatformLang(lang.code)}
+                          className={`w-full text-left px-3 py-1.5 flex items-center justify-between text-xs cursor-pointer transition-colors ${
+                            platformLang === lang.code ? 'bg-blue-600/30 text-amber-400 font-bold' : 'text-gray-300 hover:bg-white/5'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm leading-none">{lang.flag}</span>
+                            <span>{lang.nativeName}</span>
+                          </div>
+                          {platformLang === lang.code && <CheckCircle2 className="w-3.5 h-3.5 text-amber-400" />}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
 
@@ -5569,7 +5726,11 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
               <div className="flex items-center justify-between text-[11px]">
                 <span className="text-gray-400 font-medium flex items-center gap-1">
                   <Clock className="w-3 h-3 text-blue-400" />
-                  <span>ডেইলি প্রফিট ক্যাপ ({bonusCategory.dailyProfitCapPercent}%):</span>
+                  <span>
+                    {isBengali 
+                      ? `ডেইলি প্রফিট ক্যাপ (${bonusCategory.dailyProfitCapPercent}%):` 
+                      : `Daily Profit Cap (${bonusCategory.dailyProfitCapPercent}%):`}
+                  </span>
                 </span>
                 <span className="font-mono font-bold text-white">
                   ${bonusDailyState.profitToday.toFixed(2)} / ${bonusDailyState.dailyCapUsd.toFixed(2)}
@@ -5589,9 +5750,15 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
 
               <div className="flex items-center justify-between text-[10px]">
                 <span className={bonusDailyState.isCapped ? 'text-rose-400 font-bold' : 'text-gray-400'}>
-                  {bonusDailyState.isCapped ? '⚠️ সর্বোচ্চ প্রফিট লিমিট পূর্ণ (ট্রেড পজ)' : `বাকি: $${bonusDailyState.remainingCapUsd.toFixed(2)}`}
+                  {bonusDailyState.isCapped 
+                    ? (isBengali ? '⚠️ সর্বোচ্চ প্রফিট লিমিট পূর্ণ (ট্রেড পজ)' : '⚠️ Max Daily Profit Limit Reached (Paused)') 
+                    : (isBengali ? `বাকি: $${bonusDailyState.remainingCapUsd.toFixed(2)}` : `Remaining: $${bonusDailyState.remainingCapUsd.toFixed(2)}`)}
                 </span>
-                <span className="text-gray-400 font-mono">00:00 UTC রিসেট ({bonusDailyState.resetHoursRemaining}h)</span>
+                <span className="text-gray-400 font-mono">
+                  {isBengali 
+                    ? `00:00 UTC রিসেট (${bonusDailyState.resetHoursRemaining}h)` 
+                    : `00:00 UTC Reset (${bonusDailyState.resetHoursRemaining}h)`}
+                </span>
               </div>
             </div>
 
@@ -5600,7 +5767,9 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
               <div className="flex items-center justify-between text-[11px]">
                 <span className="text-gray-400 font-medium flex items-center gap-1">
                   <Trophy className="w-3 h-3 text-amber-400" />
-                  <span>চ্যালেঞ্জ টার্গেট (১০০% বৃদ্ধি):</span>
+                  <span>
+                    {isBengali ? 'চ্যালেঞ্জ টার্গেট (১০০% বৃদ্ধি):' : 'Challenge Target (100% Gain / 2x):'}
+                  </span>
                 </span>
                 <span className="font-mono font-bold text-amber-300">
                   ${(balances.bonus || 0).toFixed(2)} / ${bonusChallenge.targetBalance.toFixed(2)}
@@ -5618,7 +5787,9 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
 
               <div className="flex items-center justify-between text-[10px]">
                 <span className={bonusChallenge.isCompleted ? 'text-emerald-300 font-bold' : 'text-gray-400'}>
-                  {bonusChallenge.isCompleted ? '🎉 টার্গেট ডাবল সম্পন্ন!' : `টার্গেটে পৌঁছাতে আর $${bonusChallenge.remainingToDouble.toFixed(2)} বাকি`}
+                  {bonusChallenge.isCompleted 
+                    ? (isBengali ? '🎉 টার্গেট ডাবল সম্পন্ন!' : '🎉 Target Doubled (Completed)!') 
+                    : (isBengali ? `টার্গেটে পৌঁছাতে আর $${bonusChallenge.remainingToDouble.toFixed(2)} বাকি` : `$${bonusChallenge.remainingToDouble.toFixed(2)} remaining to double target`)}
                 </span>
                 <span className="font-mono font-bold text-white">{bonusChallenge.progressPercent}%</span>
               </div>
@@ -5627,15 +5798,21 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
             {/* Metric 3: Withdrawable Profit Share */}
             <div className="p-2.5 rounded-xl bg-black/40 border border-white/10 flex flex-col justify-between sm:col-span-2 lg:col-span-1">
               <div className="flex items-center justify-between text-[11px]">
-                <span className="text-gray-400 font-medium">উইথড্রযোগ্য প্রফিট শেয়ার:</span>
+                <span className="text-gray-400 font-medium">
+                  {isBengali ? 'উইথড্রযোগ্য প্রফিট শেয়ার:' : 'Withdrawable Profit Share:'}
+                </span>
                 <span className="font-mono font-black text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/30">
                   {bonusCategory.withdrawableProfitSharePercent}%
                 </span>
               </div>
               <p className="text-[10px] text-gray-400 mt-1 leading-snug">
                 {bonusChallenge.isCompleted
-                  ? `অ্যাকাউন্ট সক্রিয়! অর্জিত নতুন প্রফিটের ${bonusCategory.withdrawableProfitSharePercent}% সরাসরি উইথড্রযোগ্য।`
-                  : `ব্যালেন্স ডাবল হওয়ার পর একাউন্ট একটিভ হবে এবং পরবর্তী প্রফিটের ${bonusCategory.withdrawableProfitSharePercent}% উইথড্রযোগ্য।`}
+                  ? (isBengali
+                      ? `অ্যাকাউন্ট সক্রিয়! অর্জিত নতুন প্রফিটের ${bonusCategory.withdrawableProfitSharePercent}% সরাসরি উইথড্রযোগ্য।`
+                      : `Account activated! ${bonusCategory.withdrawableProfitSharePercent}% of newly earned profits are directly withdrawable.`)
+                  : (isBengali
+                      ? `ব্যালেন্স ডাবল হওয়ার পর একাউন্ট একটিভ হবে এবং পরবর্তী প্রফিটের ${bonusCategory.withdrawableProfitSharePercent}% উইথড্রযোগ্য।`
+                      : `Account unlocks when balance doubles (2x). Then ${bonusCategory.withdrawableProfitSharePercent}% of subsequent profits become withdrawable.`)}
               </p>
             </div>
           </div>
