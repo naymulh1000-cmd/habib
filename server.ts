@@ -3750,6 +3750,14 @@ app.post('/api/otc/admin-mode', (req, res) => {
     otcControlConfig.lastUpdated = Date.now();
     persistOtcControlConfig();
 
+    // Immediately refresh in-memory exposure for all OTC markets so market reaction is instant
+    marketsConfig.forEach(m => {
+      const isOtc = m.category === 'otc' || (m.symbol && m.symbol.toUpperCase().includes('OTC')) || m.isRealMarket === false;
+      if (isOtc) {
+        updateServerLiveExposureForSymbol(m.symbol);
+      }
+    });
+
     return res.json({
       success: true,
       adminPredictorMode: otcControlConfig.adminPredictorMode,
@@ -3851,6 +3859,40 @@ setInterval(() => {
         t.outcome = 'LOST';
         t.pnl = -amount;
         t.returnPayout = 0;
+        t.closeTimestamp = t.expiryTimestamp;
+        t.closeTime = new Date(t.expiryTimestamp).toISOString();
+        t.updatedAt = now;
+        hasChanges = true;
+      } else {
+        // Natural settlement for all other cases (when 5S Loss is OFF, or for Demo & Bonus accounts):
+        const cleanSym = (t.symbol || '').toUpperCase().trim();
+        const key = `${cleanSym}_M1`;
+        const active = otcActiveCandlesCache.get(key);
+        const exitPrice = (active && typeof active.close === 'number') ? active.close : (t.currentPrice || t.entryPrice);
+        const isUp = t.type === 'CALL' || t.type === 'UP' || t.type === 'BUY';
+        const isDown = t.type === 'PUT' || t.type === 'DOWN' || t.type === 'SELL';
+        const isWin = (isUp && exitPrice > t.entryPrice) || (isDown && exitPrice < t.entryPrice);
+        const isDraw = exitPrice === t.entryPrice;
+        const payout = (t.payoutPercent || 92) / 100;
+
+        if (isWin) {
+          t.status = 'WON';
+          t.outcome = 'WON';
+          t.pnl = Number((amount * payout).toFixed(2));
+          t.returnPayout = Number((amount + t.pnl).toFixed(2));
+        } else if (isDraw) {
+          t.status = 'DRAW';
+          t.outcome = 'DRAW';
+          t.pnl = 0;
+          t.returnPayout = amount;
+        } else {
+          t.status = 'LOST';
+          t.outcome = 'LOST';
+          t.pnl = -amount;
+          t.returnPayout = 0;
+        }
+        t.exitPrice = exitPrice;
+        t.closePrice = exitPrice;
         t.closeTimestamp = t.expiryTimestamp;
         t.closeTime = new Date(t.expiryTimestamp).toISOString();
         t.updatedAt = now;

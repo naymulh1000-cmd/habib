@@ -535,22 +535,23 @@ export function getDeterministicActiveCandle(
   let effectiveTargetClose = targetClose;
 
   if (exposure && exposure.enabled === true && exposure.biasDirection !== 'NEUTRAL') {
-    // Decisive subtle delta guaranteeing clean loss closure (1.6 pips on Forex, $0.70 on Gold, $25 on BTC)
+    // Decisive subtle delta guaranteeing clean loss closure (1.2 pips on Forex, $0.50 on Gold, $18 on BTC)
     const subtleDelta = isGold
-      ? 0.70
+      ? 0.50
       : isCrypto
-        ? base * 0.00035
+        ? base * 0.00025
         : isJpy
-          ? pipStep * 20
-          : pipStep * 16;
+          ? pipStep * 14
+          : pipStep * 12;
 
+    // Clean, natural medium-sized candle body bounds (no giant/unrealistic stretch, identical for all viewers)
     const maxAllowedBody = isGold
-      ? 1.80
+      ? 1.30
       : isCrypto
-        ? base * 0.0012
+        ? base * 0.00075
         : isJpy
-          ? pipStep * 45
-          : pipStep * 40;
+          ? pipStep * 30
+          : pipStep * 26;
 
     let targetShift = 0;
     if (exposure.biasDirection === 'DOWN') {

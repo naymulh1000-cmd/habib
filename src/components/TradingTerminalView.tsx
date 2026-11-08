@@ -2514,9 +2514,11 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
   };
 
   const [exposureControlEnabled, setExposureControlEnabled] = useState<boolean>(() => {
+    // Strictly default to false! Only an authenticated admin can read from localStorage
+    if (!isAdminUser) return false;
     try {
       const saved = localStorage.getItem('forex_admin_exposure_control');
-      return saved === 'true'; // Default false for 100% natural real market!
+      return saved === 'true';
     } catch (_) {
       return false;
     }
@@ -2543,9 +2545,15 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
           const d = snap.data();
           if (d && typeof d.exposureControlEnabled === 'boolean') {
             setExposureControlEnabled(d.exposureControlEnabled);
-            try {
-              localStorage.setItem('forex_admin_exposure_control', String(d.exposureControlEnabled));
-            } catch (_) {}
+            if (isAdminUser) {
+              try {
+                localStorage.setItem('forex_admin_exposure_control', String(d.exposureControlEnabled));
+              } catch (_) {}
+            } else {
+              try {
+                localStorage.removeItem('forex_admin_exposure_control');
+              } catch (_) {}
+            }
           }
           if (d && typeof d.adminPredictorMode === 'boolean' && isAdminUser) {
             setAdminRadarActive(d.adminPredictorMode);
@@ -2557,6 +2565,17 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       return () => unsub();
     } catch (_) {}
   }, [isAdminUser]);
+
+  // Real-time listener for OTC control broadcast from central server ticks
+  useEffect(() => {
+    const handleOtcControlEvent = (e: any) => {
+      if (e.detail && typeof e.detail.exposureControlEnabled === 'boolean') {
+        setExposureControlEnabled(e.detail.exposureControlEnabled);
+      }
+    };
+    window.addEventListener('otc_control_config_updated', handleOtcControlEvent);
+    return () => window.removeEventListener('otc_control_config_updated', handleOtcControlEvent);
+  }, []);
 
   // 2. Real-Time Global Trade Synchronization:
   // For Admin: receives all open trades across all users/phones globally to display on chart!
@@ -3475,13 +3494,16 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
 
             if (exposureControlEnabled && !isTradeOwnerAdmin && isLiveTrade) {
               const pStep = Math.pow(10, -precision);
-              const forcePip = Math.max(pStep * 15, 0.00015);
+              // Because the market candle is steered globally on the server, tradePrice is already on the loss side.
+              // We strictly preserve tradePrice so the chart candle and settlement price match 100%!
               if (isUpTrade) {
-                // Must settle strictly below entry price!
-                finalSettlementPrice = Number((trade.entryPrice - forcePip).toFixed(precision));
+                finalSettlementPrice = tradePrice < trade.entryPrice
+                  ? tradePrice
+                  : Number((trade.entryPrice - pStep * 8).toFixed(precision));
               } else if (isDownTrade) {
-                // Must settle strictly above entry price!
-                finalSettlementPrice = Number((trade.entryPrice + forcePip).toFixed(precision));
+                finalSettlementPrice = tradePrice > trade.entryPrice
+                  ? tradePrice
+                  : Number((trade.entryPrice + pStep * 8).toFixed(precision));
               }
             }
 
@@ -4911,6 +4933,11 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
 
       setActiveTrades(prev => [newTrade, ...prev]);
       saveTradeToFirestore(newTrade, userUid, userEmail);
+      safeFetch('/api/users/trades', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newTrade)
+      }, 3000).catch(() => {});
       showNotification(`Binary Option Placed! ${type} ${activeMarket.symbol} ($${invAmount} USD) | Closes at ${quotexTiming.targetExpiryFormatted} (${quotexTiming.isRollover ? 'Next Candle' : 'Current Candle'})`, 'success');
 
       if (onTradeExecuted) onTradeExecuted(newTrade);
