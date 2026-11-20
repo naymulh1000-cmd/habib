@@ -91,7 +91,7 @@ export function saveStoredMarkets(markets: MarketPairConfig[]) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ markets })
-    }, 600).catch(() => {});
+    }, 3500).catch(() => {});
   } catch (_) {}
 
   try {
@@ -104,7 +104,7 @@ export function saveStoredMarkets(markets: MarketPairConfig[]) {
 
 export async function fetchRemoteMarkets(): Promise<MarketPairConfig[] | null> {
   try {
-    const data = await safeFetchJson('/api/markets', {}, 600);
+    const data = await safeFetchJson('/api/markets', {}, 3500);
     if (data && Array.isArray(data.markets) && data.markets.length > 0) {
       localStorage.setItem(LOCAL_MARKETS_KEY, JSON.stringify(data.markets));
       window.dispatchEvent(new Event('forex_markets_config_updated'));
@@ -143,7 +143,7 @@ export function subscribeToMarketConfig(callback: (markets: MarketPairConfig[]) 
   }
 
   // Initial fetch on mount (with safe timeout, zero repeated background polling)
-  safeFetchJson('/api/markets', {}, 600)
+  safeFetchJson('/api/markets', {}, 3500)
     .then(data => {
       if (data && Array.isArray(data.markets) && data.markets.length > 0) {
         callback(data.markets);

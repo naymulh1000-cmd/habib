@@ -95,7 +95,8 @@ function checkQuotaError(err: any): boolean {
 }
 
 // Versioned cache key to automatically flush older distorted candles
-const CANDLE_CACHE_VERSION = 'v7_quotex_grade_otc';
+const CANDLE_CACHE_VERSION = 'v8_server_auth_otc';
+const pendingOtcHistoryFetches = new Map<string, Promise<Candlestick[]>>();
 
 // Throttled helper to save candles into local storage backup without blocking the UI
 let lastLocalStorageSaveTime = 0;
@@ -235,13 +236,19 @@ export async function saveSingleCandleToFirestore(
   timeframe: string,
   candle: Candlestick
 ): Promise<void> {
+  const isOtcSymbol = symbol.toUpperCase().includes('OTC');
+  if (isOtcSymbol) {
+    // OTC candles are 100% server-authoritative; never overwrite from client
+    return;
+  }
+
   const marketKey = getMarketKey(symbol, timeframe);
   
   // Update local memory cache instantly
   const existing = candleMemoryCache[marketKey] || [];
   candleMemoryCache[marketKey] = mergeAndDeduplicateCandles(existing, [candle]);
 
-  // Sync to backend OTC finalized candles cache in background with timeout guard
+  // Sync to backend cache for non-OTC markets with timeout guard
   try {
     safeFetch('/api/otc-candles/finalize', {
       method: 'POST',
@@ -613,41 +620,58 @@ export async function loadOrInitializeCandles(
   const now = customMarketEngine.getSyncedNow();
   const currentBucketTime = Math.floor(now / timeStepMs) * timeStepMs;
 
-  // 1. Authoritative OTC Binary Options Market Handler:
+  // 1. Authoritative OTC Binary Options Market Handler (Strictly Server-Only — zero client drift):
   if (isOtc) {
-    const cachedLocal = candleMemoryCache[marketKey] || loadFromLocalStorage(marketKey) || [];
-    try {
-      const data = await safeFetchJson(`/api/otc-candles/${encodeURIComponent(market.symbol)}/${encodeURIComponent(timeframe)}?count=${Math.max(600, requiredCount)}`, {}, 4000);
-      if (data && data.candles && Array.isArray(data.candles) && data.candles.length > 0) {
-        const sanitized = [...data.candles];
-        for (let i = 1; i < sanitized.length; i++) {
-          sanitized[i].open = sanitized[i - 1].close;
-          sanitized[i].high = Math.max(sanitized[i].high, sanitized[i].open, sanitized[i].close);
-          sanitized[i].low = Math.min(sanitized[i].low, sanitized[i].open, sanitized[i].close);
-        }
-        candleMemoryCache[marketKey] = sanitized;
-        saveToLocalStorage(marketKey, sanitized);
-        return sanitized;
-      }
-    } catch (_) {}
-
-    // Synchronous pure deterministic generation fallback merged with cached finalized candles:
-    const targetStartTime = currentBucketTime - (Math.max(600, requiredCount) * timeStepMs);
-    const historical = generateDeterministicCandleRange(market, timeframe, targetStartTime, currentBucketTime - timeStepMs);
-    const lastHistClose = historical.length > 0 ? historical[historical.length - 1].close : undefined;
-    const { activeCandle } = getDeterministicActiveCandle(market, currentBucketTime, now, tfSecs, lastHistClose);
-    const fullCandles = [...historical, activeCandle];
-
-    const sanitizedFallback = [...fullCandles];
-    for (let i = 1; i < sanitizedFallback.length; i++) {
-      sanitizedFallback[i].open = sanitizedFallback[i - 1].close;
-      sanitizedFallback[i].high = Math.max(sanitizedFallback[i].high, sanitizedFallback[i].open, sanitizedFallback[i].close);
-      sanitizedFallback[i].low = Math.min(sanitizedFallback[i].low, sanitizedFallback[i].open, sanitizedFallback[i].close);
+    const reqCount = Math.max(600, requiredCount);
+    const inFlightKey = `${marketKey}_${reqCount}`;
+    const existingPromise = pendingOtcHistoryFetches.get(inFlightKey);
+    if (existingPromise) {
+      return existingPromise;
     }
 
-    candleMemoryCache[marketKey] = sanitizedFallback;
-    saveToLocalStorage(marketKey, sanitizedFallback);
-    return sanitizedFallback;
+    const fetchPromise = (async (): Promise<Candlestick[]> => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const data = await safeFetchJson(
+            `/api/otc-candles/${encodeURIComponent(market.symbol)}/${encodeURIComponent(timeframe)}?count=${reqCount}`,
+            {},
+            3500
+          );
+          if (data && data.candles && Array.isArray(data.candles) && data.candles.length > 0) {
+            if (typeof data.serverTime === 'number') {
+              customMarketEngine.syncServerTimeFromServer(data.serverTime, data.seq);
+            }
+            // Preserve exact server OHLC verbatim (never stretch wicks or mutate history on client!)
+            const exactServerCandles: Candlestick[] = data.candles.map((c: any) => ({
+              time: c.time,
+              timestamp: c.timestamp || c.time,
+              open: c.open,
+              high: c.high,
+              low: c.low,
+              close: c.close,
+              volume: c.volume ?? 100
+            }));
+            candleMemoryCache[marketKey] = exactServerCandles;
+            return exactServerCandles;
+          }
+        } catch (_) {}
+        if (attempt < 2) {
+          await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+        }
+      }
+
+      // If completely offline across retries, return current RAM cache rather than inventing mismatched candles
+      const memFallback = candleMemoryCache[marketKey];
+      if (memFallback && memFallback.length > 0) {
+        return memFallback;
+      }
+      return [];
+    })().finally(() => {
+      pendingOtcHistoryFetches.delete(inFlightKey);
+    });
+
+    pendingOtcHistoryFetches.set(inFlightKey, fetchPromise);
+    return fetchPromise;
   }
 
   const base = market.basePrice || market.price || 100;
@@ -737,12 +761,26 @@ export async function loadOlderHistoricalCandles(
 
   const isOtc = market?.category === 'otc' || Boolean(market?.symbol && market.symbol.toUpperCase().includes('OTC')) || market?.isRealMarket === false;
   if (isOtc) {
-    const tfSecs = getTimeframeSeconds(timeframe);
-    const timeStepMs = tfSecs * 1000;
-    const toTime = oldestCandleTime - timeStepMs;
-    const fromTime = toTime - ((count || 50) * timeStepMs);
-    const olderDeterministic = generateDeterministicCandleRange(market, timeframe, fromTime, toTime);
-    return olderDeterministic;
+    try {
+      const reqCount = Math.max(35, count || 50);
+      const data = await safeFetchJson(
+        `/api/otc-candles/${encodeURIComponent(market.symbol)}/${encodeURIComponent(timeframe)}?count=${reqCount}&beforeTime=${oldestCandleTime}`,
+        {},
+        3500
+      );
+      if (data && data.candles && Array.isArray(data.candles)) {
+        return data.candles.map((c: any) => ({
+          time: c.time,
+          timestamp: c.timestamp || c.time,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume ?? 100
+        }));
+      }
+    } catch (_) {}
+    return [];
   }
 
   // Real live markets (Forex: EUR/USD, GBP/USD, USD/JPY, AUD/USD, USD/CAD; Crypto: BTC, ETH, SOL)

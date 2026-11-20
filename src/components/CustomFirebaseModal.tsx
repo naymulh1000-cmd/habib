@@ -386,9 +386,9 @@ export const CustomFirebaseModal: React.FC<CustomFirebaseModalProps> = ({ isOpen
                     <b>3. Email Verification & Branding Setup:</b>
                     <p className="text-[11px] text-gray-400 pl-4 mt-0.5">
                       Console -&gt; <b>Authentication</b> -&gt; <b>Templates</b> -&gt; <b>Email address verification</b>:<br />
-                      &bull; <b>Public-facing name:</b> <span className="text-[#F5B301] font-bold">Forex Trade Pro</span><br />
-                      &bull; <b>Sender name:</b> <span className="text-[#F5B301] font-bold">Forex Trade Pro</span><br />
-                      &bull; <b>Subject:</b> <span className="text-emerald-300 font-bold">Verify Your Forex Trade Pro Account</span><br />
+                      &bull; <b>Public-facing name:</b> <span className="text-[#F5B301] font-bold">FXBY24</span><br />
+                      &bull; <b>Sender name:</b> <span className="text-[#F5B301] font-bold">FXBY24</span><br />
+                      &bull; <b>Subject:</b> <span className="text-emerald-300 font-bold">Verify Your FXBY24 Account</span><br />
                       <span className="text-[10px] text-cyan-300 block mt-1">
                         *Note: Sender email uses your project&apos;s default domain until a custom domain is connected in Firebase Console.
                       </span>

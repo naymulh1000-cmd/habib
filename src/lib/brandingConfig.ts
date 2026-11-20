@@ -10,25 +10,46 @@ export interface BrandingConfig {
 
 export const DEFAULT_BRANDING: BrandingConfig = {
   logoUrl: '/logo.png',
-  brandName: 'Forex Trade',
-  brandSubtitle: 'PRO',
+  brandName: 'FXBY24',
+  brandSubtitle: '',
   updatedAt: new Date().toISOString(),
 };
 
 const LOCAL_BRANDING_KEY = 'forex_branding_config';
 const LEGACY_LOGO_KEY = 'forex_master_logo_url';
 
+export function normalizeBrandingConfig(data?: Partial<BrandingConfig> | null): BrandingConfig {
+  const rawName = (data?.brandName || '').trim();
+  const isLegacyName = !rawName || /^forex\s*trade(\s*pro)?$/i.test(rawName);
+  const brandName = isLegacyName ? DEFAULT_BRANDING.brandName : rawName;
+
+  const rawSub = (data?.brandSubtitle ?? '').trim();
+  const brandSubtitle =
+    isLegacyName && (!rawSub || /^pro$/i.test(rawSub))
+      ? ''
+      : data?.brandSubtitle !== undefined
+        ? rawSub
+        : DEFAULT_BRANDING.brandSubtitle;
+
+  return {
+    logoUrl: data?.logoUrl || DEFAULT_BRANDING.logoUrl,
+    brandName,
+    brandSubtitle,
+    updatedAt: data?.updatedAt || DEFAULT_BRANDING.updatedAt,
+  };
+}
+
 export function getStoredBranding(): BrandingConfig {
   try {
     const raw = localStorage.getItem(LOCAL_BRANDING_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return {
+      return normalizeBrandingConfig({
         logoUrl: parsed.logoUrl || localStorage.getItem(LEGACY_LOGO_KEY) || DEFAULT_BRANDING.logoUrl,
-        brandName: parsed.brandName || DEFAULT_BRANDING.brandName,
-        brandSubtitle: parsed.brandSubtitle || DEFAULT_BRANDING.brandSubtitle,
-        updatedAt: parsed.updatedAt || DEFAULT_BRANDING.updatedAt,
-      };
+        brandName: parsed.brandName,
+        brandSubtitle: parsed.brandSubtitle,
+        updatedAt: parsed.updatedAt,
+      });
     }
     const legacyLogo = localStorage.getItem(LEGACY_LOGO_KEY);
     if (legacyLogo) {
@@ -175,11 +196,12 @@ export function subscribeToBranding(onUpdate: (config: BrandingConfig) => void):
   safeFetchJson('/api/branding', {}, 600)
     .then(data => {
       if (data && typeof data === 'object' && data.logoUrl !== undefined) {
+        const normalized = normalizeBrandingConfig(data);
         const current = getStoredBranding();
-        if (data.logoUrl !== current.logoUrl || data.brandName !== current.brandName || data.updatedAt !== current.updatedAt) {
-          saveStoredBranding(data);
-          updateBrowserFavicon(data.logoUrl);
-          onUpdate(data);
+        if (normalized.logoUrl !== current.logoUrl || normalized.brandName !== current.brandName || normalized.brandSubtitle !== current.brandSubtitle || normalized.updatedAt !== current.updatedAt) {
+          saveStoredBranding(normalized);
+          updateBrowserFavicon(normalized.logoUrl);
+          onUpdate(normalized);
         }
       }
     })
@@ -190,9 +212,10 @@ export function subscribeToBranding(onUpdate: (config: BrandingConfig) => void):
     try {
       const data = await safeFetchJson('/api/branding', {}, 600);
       if (data?.logoUrl !== undefined) {
-        saveStoredBranding(data);
-        updateBrowserFavicon(data.logoUrl);
-        onUpdate(data);
+        const normalized = normalizeBrandingConfig(data);
+        saveStoredBranding(normalized);
+        updateBrowserFavicon(normalized.logoUrl);
+        onUpdate(normalized);
       }
     } catch (_) {}
   };
@@ -219,12 +242,10 @@ export function subscribeToBranding(onUpdate: (config: BrandingConfig) => void):
         (snap) => {
           if (snap.exists()) {
             const data = snap.data() as Partial<BrandingConfig>;
-            const updated: BrandingConfig = {
-              logoUrl: data.logoUrl || DEFAULT_BRANDING.logoUrl,
-              brandName: data.brandName || DEFAULT_BRANDING.brandName,
-              brandSubtitle: data.brandSubtitle || DEFAULT_BRANDING.brandSubtitle,
+            const updated = normalizeBrandingConfig({
+              ...data,
               updatedAt: data.updatedAt || new Date().toISOString(),
-            };
+            });
             saveStoredBranding(updated);
             updateBrowserFavicon(updated.logoUrl);
             onUpdate(updated);

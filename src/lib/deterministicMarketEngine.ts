@@ -68,6 +68,8 @@ export interface MarketExposure {
   heavySide?: 'UP' | 'DOWN' | 'NONE';
   heavyEntryPrice?: number;
   minRemainingSec?: number;
+  minRemainingMs?: number;
+  activeDurationMs?: number;
   enabled?: boolean;
 }
 
@@ -462,8 +464,8 @@ export function getIntraCandlePriceActionNoise(
     : isGold
       ? 0.075
       : isJpy
-        ? pipStep * 4.2
-        : pipStep * 3.8;
+        ? pipStep * 7.2
+        : pipStep * 6.5;
 
   const rawPA = (n1 * 0.28 + n2 * 0.32 + n3 * 0.25 + n4 * 0.15) * amp * envelope;
   return rawPA;
@@ -529,10 +531,18 @@ export function getDeterministicActiveCandle(
   // Smooth cubic ease: starts exactly at candleOpen (slope=0), glides towards targetClose
   const smoothProgress = progress * progress * (3 - 2 * progress);
 
+  // Natural base trajectory glides toward targetClose
+  const naturalPrice = candleOpen + (targetClose - candleOpen) * smoothProgress;
+
+  // Organic order-flow micro-ticks (bell envelope ensures strictly 0 at open and 0 at close)
+  const rawPaOffset = getIntraCandlePriceActionNoise(market.symbol, base, precision, nowMs, currentBucketTimeMs, timeStepMs);
+
   // 4. SMART SMOOTHING LOSS ENGINE (Adaptive Risk Mitigation)
-  // Strictly applies ONLY to LIVE trades with heavy volume side (DEMO is 100% untouched)
+  // Strictly applies ONLY to LIVE non-admin trades when Admin turns ON 5S Loss (DEMO & BONUS are 100% untouched)
   const exposure = getMarketLiveExposure(market.symbol);
-  let effectiveTargetClose = targetClose;
+  let baseLivePrice = naturalPrice;
+  let paOffset = rawPaOffset;
+  let steerClampBound: { dir: 'UP' | 'DOWN'; limitPrice: number } | null = null;
 
   if (exposure && exposure.enabled === true && exposure.biasDirection !== 'NEUTRAL') {
     // Decisive subtle delta guaranteeing clean loss closure (1.2 pips on Forex, $0.50 on Gold, $18 on BTC)
@@ -544,46 +554,76 @@ export function getDeterministicActiveCandle(
           ? pipStep * 14
           : pipStep * 12;
 
-    // Clean, natural medium-sized candle body bounds (no giant/unrealistic stretch, identical for all viewers)
-    const maxAllowedBody = isGold
-      ? 1.30
+    // Clean, natural medium-sized candle body guard relative to natural trajectory
+    const maxSteerShift = isGold
+      ? 2.20
       : isCrypto
-        ? base * 0.00075
+        ? base * 0.0012
         : isJpy
-          ? pipStep * 30
-          : pipStep * 26;
+          ? pipStep * 50
+          : pipStep * 45;
 
-    let targetShift = 0;
+    const refEntry = (exposure.heavyEntryPrice && Number.isFinite(exposure.heavyEntryPrice) && exposure.heavyEntryPrice > 0)
+      ? exposure.heavyEntryPrice
+      : candleOpen;
+
+    let steerTarget = naturalPrice;
     if (exposure.biasDirection === 'DOWN') {
-      // Heavier volume on UP -> Steer market DOWN below entry price so UP trades settle in loss
-      let desired = candleOpen - subtleDelta;
-      if (exposure.heavyEntryPrice && Number.isFinite(exposure.heavyEntryPrice)) {
-        desired = Math.min(desired, exposure.heavyEntryPrice - subtleDelta);
+      // Heavier volume on UP -> Market must be BELOW refEntry - subtleDelta so heavy UP trades settle in loss
+      const desiredLoss = refEntry - subtleDelta;
+      if (naturalPrice > desiredLoss) {
+        steerTarget = Math.max(naturalPrice - maxSteerShift, desiredLoss);
       }
-      desired = Math.max(candleOpen - maxAllowedBody, desired);
-      targetShift = desired - targetClose;
+      steerClampBound = { dir: 'DOWN', limitPrice: refEntry - pipStep * 3 };
     } else if (exposure.biasDirection === 'UP') {
-      // Heavier volume on DOWN -> Steer market UP above entry price so DOWN trades settle in loss
-      let desired = candleOpen + subtleDelta;
-      if (exposure.heavyEntryPrice && Number.isFinite(exposure.heavyEntryPrice)) {
-        desired = Math.max(desired, exposure.heavyEntryPrice + subtleDelta);
+      // Heavier volume on DOWN -> Market must be ABOVE refEntry + subtleDelta so heavy DOWN trades settle in loss
+      const desiredLoss = refEntry + subtleDelta;
+      if (naturalPrice < desiredLoss) {
+        steerTarget = Math.min(naturalPrice + maxSteerShift, desiredLoss);
       }
-      desired = Math.min(candleOpen + maxAllowedBody, desired);
-      targetShift = desired - targetClose;
+      steerClampBound = { dir: 'UP', limitPrice: refEntry + pipStep * 3 };
     }
 
-    // Natural progressive cosine ease:
-    // Seamlessly glides price across the entire candle duration with ZERO jumps or abrupt snapping
-    const smoothEase = (1 - Math.cos(progress * Math.PI)) / 2;
-    effectiveTargetClose = targetClose + (targetShift * smoothEase);
+    // Duration-aware smooth cosine steering curve:
+    // Works equally smoothly for 5s, 15s, 30s, 1m, 2m, 5m trades!
+    const tradeDurMs = Math.max(4000, exposure.activeDurationMs || 60000);
+    const remMs = typeof exposure.minRemainingMs === 'number' && Number.isFinite(exposure.minRemainingMs)
+      ? exposure.minRemainingMs
+      : ((typeof exposure.minRemainingSec === 'number' && exposure.minRemainingSec < 9999) ? exposure.minRemainingSec * 1000 : 60000);
+
+    const steerWindowMs = Math.min(20000, Math.max(3500, tradeDurMs * 0.50));
+    const finishLeadMs = tradeDurMs <= 10000 ? 900 : 1800;
+
+    let rawSteerRatio = 0;
+    if (remMs <= finishLeadMs) {
+      rawSteerRatio = 1.0;
+    } else if (remMs < steerWindowMs) {
+      rawSteerRatio = (steerWindowMs - remMs) / Math.max(1000, steerWindowMs - finishLeadMs);
+    } else {
+      // Gentle initial bias (0% -> 12% across waiting time) so there is zero sudden kink when entering the final window
+      rawSteerRatio = Math.min(0.12, (1 - Math.cos(progress * Math.PI)) * 0.06);
+    }
+
+    const expProgress = (1 - Math.cos(Math.max(0, Math.min(1, rawSteerRatio)) * Math.PI)) / 2;
+    baseLivePrice = naturalPrice + (steerTarget - naturalPrice) * expProgress;
+
+    // Preserve organic micro-tick breathing while ensuring noise cannot accidentally cross back to WIN right before expiry
+    paOffset = rawPaOffset * (1 - expProgress * 0.72);
+    if (expProgress < 0.85) {
+      steerClampBound = null;
+    }
   }
 
-  // Smooth base trajectory glides toward effectiveTargetClose
-  const baseLivePrice = candleOpen + (effectiveTargetClose - candleOpen) * smoothProgress;
+  let computedPrice = baseLivePrice + paOffset;
+  if (steerClampBound) {
+    if (steerClampBound.dir === 'DOWN' && computedPrice > steerClampBound.limitPrice) {
+      computedPrice = steerClampBound.limitPrice;
+    } else if (steerClampBound.dir === 'UP' && computedPrice < steerClampBound.limitPrice) {
+      computedPrice = steerClampBound.limitPrice;
+    }
+  }
 
-  // Organic order-flow micro-ticks (bell envelope ensures strictly 0 at open and 0 at close)
-  const paOffset = getIntraCandlePriceActionNoise(market.symbol, base, precision, nowMs, currentBucketTimeMs, timeStepMs);
-  const livePrice = Number((baseLivePrice + paOffset).toFixed(precision));
+  const livePrice = Number(computedPrice.toFixed(precision));
 
   // Natural High and Low strictly track the actual price excursions traded during the candle
   // Completely eliminates artificial ghost wicks ("কোন অযথা উইক হবে না")!

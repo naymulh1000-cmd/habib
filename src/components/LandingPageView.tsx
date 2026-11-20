@@ -307,7 +307,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
   const faqList = [
     {
       q: 'How does the 100% First Deposit Bonus work?',
-      a: 'When you register a new account and complete your first qualifying deposit of USD $250 or more, Forex Trade Pro automatically credits a 100% cash matching bonus to your Bonus Wallet. For instance, if you deposit $250, you receive an extra $250 in your Bonus Wallet, giving you a total of $500 in trading capital.'
+      a: 'When you register a new account and complete your first qualifying deposit of USD $250 or more, FXBY24 automatically credits a 100% cash matching bonus to your Bonus Wallet. For instance, if you deposit $250, you receive an extra $250 in your Bonus Wallet, giving you a total of $500 in trading capital.'
     },
     {
       q: 'What is the minimum deposit required to qualify for the 100% Bonus?',
@@ -327,7 +327,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
     },
     {
       q: 'Can I trade both Forex and Binary Options on the same account?',
-      a: 'Yes! Forex Trade Pro features a unified terminal allowing you to seamlessly toggle between Forex Margin Trading (ECN spreads from 0.0 pips with up to 1:2000 leverage) and Binary Options Trading (Fixed-time contracts with up to 94% payout) from a single dashboard.'
+      a: 'Yes! FXBY24 features a unified terminal allowing you to seamlessly toggle between Forex Margin Trading (ECN spreads from 0.0 pips with up to 1:2000 leverage) and Binary Options Trading (Fixed-time contracts with up to 94% payout) from a single dashboard.'
     }
   ];
 
@@ -361,7 +361,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
               <div className="flex flex-col justify-center whitespace-nowrap">
                 <span className="text-lg sm:text-2xl font-black tracking-tight text-slate-950 flex items-center leading-none whitespace-nowrap">
                   <span className="text-amber-600 italic font-serif text-xl sm:text-3xl mr-0.5 select-none drop-shadow-2xs">F</span>
-                  <span className="tracking-tight text-slate-950 font-black whitespace-nowrap">orex Trade Pro</span>
+                  <span className="tracking-tight text-slate-950 font-black whitespace-nowrap">XBY24</span>
                 </span>
                 <span className="text-[8.5px] sm:text-[10px] font-bold text-amber-700 tracking-widest uppercase mt-0.5 select-none whitespace-nowrap">
                   Master Trading Platform
@@ -918,7 +918,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
               Understanding Forex & Binary Trading
             </h2>
             <p className="text-sm sm:text-base text-slate-600">
-              Forex Trade Pro unites two premier financial disciplines into a single high-speed execution ecosystem. Experience institutional liquidity alongside rapid fixed-time contracts.
+              FXBY24 unites two premier financial disciplines into a single high-speed execution ecosystem. Experience institutional liquidity alongside rapid fixed-time contracts.
             </p>
           </div>
 
@@ -1450,7 +1450,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
               </div>
               <h3 className="text-base font-black text-slate-900 mb-2">Friend Registers</h3>
               <p className="text-xs text-slate-600 leading-relaxed">
-                Your friend registers their new account on Forex Trade Pro and enters your 6-digit UID in the designated referral field.
+                Your friend registers their new account on FXBY24 and enters your 6-digit UID in the designated referral field.
               </p>
             </div>
 
@@ -1719,11 +1719,11 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
                 <BrandLogo size="md" theme="dark" showText={false} />
                 <span className="text-2xl font-black text-white tracking-tight">
                   <span className="text-amber-400 italic font-serif text-3xl mr-0.5">F</span>
-                  <span>orex Trade Pro</span>
+                  <span>XBY24</span>
                 </span>
               </div>
               <p className="text-xs text-slate-400 leading-relaxed max-w-sm">
-                Forex Trade Pro is an international multi-asset financial platform delivering cutting-edge execution across Forex spread trading and high-return Binary Options.
+                FXBY24 is an international multi-asset financial platform delivering cutting-edge execution across Forex spread trading and high-return Binary Options.
               </p>
               <div className="flex items-center gap-3 text-xs text-amber-400 font-bold">
                 <ShieldCheck className="w-4 h-4" />
@@ -1774,7 +1774,7 @@ export const LandingPageView: React.FC<LandingPageViewProps> = ({
               <strong>High Risk Investment Warning:</strong> Trading Foreign Exchange (Forex) and Contracts for Difference (CFDs) / Binary Options on margin carries a high level of risk and may not be suitable for all investors. The high degree of leverage can work against you as well as for you. Before deciding to trade Forex or Binary Options, you should carefully consider your investment objectives, level of experience, and risk appetite.
             </p>
             <div className="flex flex-col sm:flex-row items-center justify-between gap-3 text-gray-500 text-[11px] pt-4 border-t border-slate-900">
-              <p>© 2026 Forex Trade Pro. All rights reserved.</p>
+              <p>© 2026 FXBY24. All rights reserved.</p>
               <div className="flex items-center gap-4">
                 <span>Privacy Policy</span>
                 <span>Terms of Service</span>

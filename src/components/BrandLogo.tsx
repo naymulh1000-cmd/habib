@@ -38,8 +38,11 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
 
   // Multi-device synchronized master logo URL
   const activeLogoUrl = customLogoUrl || branding.logoUrl || '/logo.png';
-  const brandName = branding.brandName || 'Forex Trade';
-  const brandSubtitle = branding.brandSubtitle || 'PRO';
+  const rawBrandName = (branding.brandName || '').trim();
+  const isLegacyName = !rawBrandName || /^forex\s*trade(\s*pro)?$/i.test(rawBrandName);
+  const brandName = isLegacyName ? 'FXBY24' : rawBrandName;
+  const rawSub = (branding.brandSubtitle || '').trim();
+  const brandSubtitle = isLegacyName && (!rawSub || /^pro$/i.test(rawSub)) ? '' : rawSub;
 
   React.useEffect(() => {
     setImgError(false);
@@ -63,7 +66,7 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
           {!imgError && activeLogoUrl ? (
             <img 
               src={activeLogoUrl} 
-              alt="Forex Trade Pro Master Logo" 
+              alt="FXBY24 Master Logo" 
               className="w-full h-full object-cover rounded-2xl" 
               referrerPolicy="no-referrer"
               onError={() => setImgError(true)}
@@ -104,9 +107,11 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
             <span className={`${currentSize.title} font-black tracking-tight ${isLight ? 'text-slate-900' : 'text-white'} ${textClass}`}>
               {brandName}
             </span>
-            <span className="bg-gradient-to-r from-[#F5B301] via-amber-300 to-[#E0A000] text-black font-black px-1.5 py-0.5 rounded-md text-[0.65em] tracking-wider uppercase shadow-sm shadow-amber-500/20 shrink-0">
-              {brandSubtitle}
-            </span>
+            {brandSubtitle && (
+              <span className="bg-gradient-to-r from-[#F5B301] via-amber-300 to-[#E0A000] text-black font-black px-1.5 py-0.5 rounded-md text-[0.65em] tracking-wider uppercase shadow-sm shadow-amber-500/20 shrink-0">
+                {brandSubtitle}
+              </span>
+            )}
           </div>
 
           {subtext ? (

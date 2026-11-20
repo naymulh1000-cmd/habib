@@ -77,10 +77,10 @@ interface TranslationContent {
 
 const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
   en: {
-    title: 'About Forex Trade Pro',
+    title: 'About FXBY24',
     subtitle: 'Official Company Profile, Legal Registrations & Financial Compliance',
     badge: 'Verified & Regulated Entity',
-    companyName: 'Forex Trade Pro International Ltd.',
+    companyName: 'FXBY24 International Ltd.',
     establishedText: 'Established in 2019 • 5+ Years of Market Excellence',
     headquartersText: 'London, United Kingdom (Global Headquarters)',
     operatingCountriesText: 'Operating in 130+ Countries Worldwide',
@@ -94,14 +94,14 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     certAuthority: 'UK Registrar of Companies & Global Multi-Asset Authority',
     certDate: 'Incorporation Date: 14 May 2019',
     certJurisdiction: 'London Financial District, England & Wales',
-    footerComplianceText: 'Forex Trade Pro strictly complies with Tier-1 Banking Segregation, AML/KYC Directives, and MiFID II European Financial Frameworks.',
+    footerComplianceText: 'FXBY24 strictly complies with Tier-1 Banking Segregation, AML/KYC Directives, and MiFID II European Financial Frameworks.',
     closeBtn: 'Close Window',
     qaList: [
       {
         id: 1,
         iconName: 'Building2',
-        question: '1. Which country is Forex Trade Pro based in and where is the Global Headquarters?',
-        answer: 'Forex Trade Pro is an international multi-asset fintech brokerage headquartered in London, United Kingdom. Its operational headquarters and primary cloud-routing data servers are situated within the central financial district of London, England.',
+        question: '1. Which country is FXBY24 based in and where is the Global Headquarters?',
+        answer: 'FXBY24 is an international multi-asset fintech brokerage headquartered in London, United Kingdom. Its operational headquarters and primary cloud-routing data servers are situated within the central financial district of London, England.',
         highlightTag: 'London, United Kingdom',
         bulletPoints: [
           'Global Headquarters: 25 Bank Street, Canary Wharf, London, E14 5JP, United Kingdom.',
@@ -113,7 +113,7 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
         id: 2,
         iconName: 'Clock',
         question: '2. When was the company established and what is its operational history?',
-        answer: 'Forex Trade Pro was founded in May 2019. Over the past 5+ years, the company has grown from an institutional technology vendor into a globally trusted multi-asset trading platform serving over 480,000 active client accounts worldwide.',
+        answer: 'FXBY24 was founded in May 2019. Over the past 5+ years, the company has grown from an institutional technology vendor into a globally trusted multi-asset trading platform serving over 480,000 active client accounts worldwide.',
         highlightTag: 'Founded May 2019 (5+ Years)',
         bulletPoints: [
           '2019: Established with core institutional liquidity partnerships in the UK.',
@@ -125,7 +125,7 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
         id: 3,
         iconName: 'Layers',
         question: '3. How does the platform operate and execute trades (True ECN / STP Mechanism)?',
-        answer: 'Forex Trade Pro operates strictly as a Non-Dealing Desk (NDD) broker utilizing True ECN (Electronic Communication Network) and STP (Straight-Through Processing) infrastructure. Client orders are routed straight to Tier-1 global liquidity pools with zero manual intervention or dealer manipulation.',
+        answer: 'FXBY24 operates strictly as a Non-Dealing Desk (NDD) broker utilizing True ECN (Electronic Communication Network) and STP (Straight-Through Processing) infrastructure. Client orders are routed straight to Tier-1 global liquidity pools with zero manual intervention or dealer manipulation.',
         highlightTag: 'Non-Dealing Desk (True ECN/STP)',
         bulletPoints: [
           'Direct Market Access (DMA) to Tier-1 international liquidity providers (Barclays, Deutsche Bank, UBS, Citibank).',
@@ -136,8 +136,8 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
       {
         id: 4,
         iconName: 'Globe2',
-        question: '4. In how many countries does Forex Trade Pro operate and provide financial services?',
-        answer: 'Forex Trade Pro actively provides continuous financial trading, liquidity, and OTC digital contract execution in more than 130 countries worldwide across Europe, Asia-Pacific, the Middle East, Latin America, and Africa.',
+        question: '4. In how many countries does FXBY24 operate and provide financial services?',
+        answer: 'FXBY24 actively provides continuous financial trading, liquidity, and OTC digital contract execution in more than 130 countries worldwide across Europe, Asia-Pacific, the Middle East, Latin America, and Africa.',
         highlightTag: '130+ Countries Worldwide',
         bulletPoints: [
           'Europe: United Kingdom, Germany, France, Spain, Italy, Netherlands, Poland.',
@@ -150,7 +150,7 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
         id: 5,
         iconName: 'Scale',
         question: '5. What are the company\'s official financial licenses, registrations, and legal validity?',
-        answer: 'Forex Trade Pro maintains full legal corporate registration and financial compliance certificates adhering to international regulatory benchmarks:',
+        answer: 'FXBY24 maintains full legal corporate registration and financial compliance certificates adhering to international regulatory benchmarks:',
         highlightTag: 'Legally Registered & Audited',
         bulletPoints: [
           'UK Companies House Corporate Registration: Entity No. #11984205 (Financial Intermediation & Technology Services).',
@@ -188,7 +188,7 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
         id: 8,
         iconName: 'Award',
         question: '8. How does the 100% Welcome Deposit Bonus & $25 UID Referral Reward ecosystem work?',
-        answer: 'Forex Trade Pro offers an industry-leading trader incentive ecosystem designed to support both beginner growth and community leadership.',
+        answer: 'FXBY24 offers an industry-leading trader incentive ecosystem designed to support both beginner growth and community leadership.',
         highlightTag: '100% Bonus & $25 UID Referral',
         bulletPoints: [
           '100% Welcome Bonus: Doubles the client\'s initial deposit (up to $500 max) to increase trading margin and buying power.',
@@ -199,10 +199,10 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     ]
   },
   bn: {
-    title: 'ফরেক্স ট্রেড প্রো (Forex Trade Pro) পরিচিতি',
+    title: 'FXBY24 পরিচিতি',
     subtitle: 'কোম্পানির অফিসিয়াল তথ্য, আইনি রেজিস্ট্রেশন ও আন্তর্জাতিক ফাইন্যান্সিয়াল লাইসেন্স',
     badge: 'ভেরিফায়েড ও রেগুলেটেড প্রতিষ্ঠান',
-    companyName: 'Forex Trade Pro International Ltd.',
+    companyName: 'FXBY24 International Ltd.',
     establishedText: '২০১৯ সালে প্রতিষ্ঠিত • ৫+ বছরেরও বেশি আন্তর্জাতিক অভিজ্ঞতা',
     headquartersText: 'লন্ডন, যুক্তরাজ্য (গ্লোবাল হেডকোয়ার্টার্স)',
     operatingCountriesText: 'বিশ্বব্যাপী ১৩০টিরও বেশি দেশে সক্রিয় সেবা',
@@ -216,14 +216,14 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     certAuthority: 'ইউকে রেজিস্ট্রার অব কোম্পানিজ ও গ্লোবাল মাল্টি-অ্যাসেট অথরিটি',
     certDate: 'নিবন্ধন তারিখ: ১৪ মে ২০১৯',
     certJurisdiction: 'লন্ডন ফিন্যান্সিয়াল ডিস্ট্রিক্ট, ইংল্যান্ড ও ওয়েলস',
-    footerComplianceText: 'Forex Trade Pro ইউরোপিয়ান টিয়ার-১ ব্যাংকিং সেগ্রিগেশন, অ্যান্টি-মানি লন্ডারিং (AML/KYC) এবং MiFID II নীতিমালা কঠোরভাবে মেনে চলে।',
+    footerComplianceText: 'FXBY24 ইউরোপিয়ান টিয়ার-১ ব্যাংকিং সেগ্রিগেশন, অ্যান্টি-মানি লন্ডারিং (AML/KYC) এবং MiFID II নীতিমালা কঠোরভাবে মেনে চলে।',
     closeBtn: 'উইন্ডো বন্ধ করুন',
     qaList: [
       {
         id: 1,
         iconName: 'Building2',
         question: '১. আমাদের কোম্পানি কোন দেশ থেকে পরিচালিত হয় এবং এর হেডকোয়ার্টার কোথায়?',
-        answer: 'Forex Trade Pro আন্তর্জাতিকভাবে যুক্তরাজ্য (London, United Kingdom) থেকে পরিচালিত হয়। এর প্রধান অপারেশনাল অফিস ও সেন্ট্রাল ক্লাউড সার্ভার ডাটা-সেন্টার লন্ডনের মূল ফিন্যান্সিয়াল ডিস্ট্রিক্টে অবস্থিত।',
+        answer: 'FXBY24 আন্তর্জাতিকভাবে যুক্তরাজ্য (London, United Kingdom) থেকে পরিচালিত হয়। এর প্রধান অপারেশনাল অফিস ও সেন্ট্রাল ক্লাউড সার্ভার ডাটা-সেন্টার লন্ডনের মূল ফিন্যান্সিয়াল ডিস্ট্রিক্টে অবস্থিত।',
         highlightTag: 'লন্ডন, যুক্তরাজ্য (UK)',
         bulletPoints: [
           'গ্লোবাল হেডকোয়ার্টার: 25 Bank Street, Canary Wharf, London, E14 5JP, United Kingdom।',
@@ -235,7 +235,7 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
         id: 2,
         iconName: 'Clock',
         question: '২. আমাদের কোম্পানি কত সালে প্রতিষ্ঠিত হয়েছে এবং এর অতীত ইতিহাস কী?',
-        answer: 'Forex Trade Pro ২০১৯ সালের মে মাসে আন্তর্জাতিকভাবে প্রতিষ্ঠিত হয়। গত ৫+ বছরেরও বেশি সময় ধরে আধুনিক প্রযুক্তি ও লিকুইডিটি সাপোর্টের মাধ্যমে এটি বিশ্বব্যাপী ৪,৮০,০০০+ সক্রিয় ট্রেডারদের বিশ্বস্ত সেবা দিয়ে আসছে।',
+        answer: 'FXBY24 ২০১৯ সালের মে মাসে আন্তর্জাতিকভাবে প্রতিষ্ঠিত হয়। গত ৫+ বছরেরও বেশি সময় ধরে আধুনিক প্রযুক্তি ও লিকুইডিটি সাপোর্টের মাধ্যমে এটি বিশ্বব্যাপী ৪,৮০,০০০+ সক্রিয় ট্রেডারদের বিশ্বস্ত সেবা দিয়ে আসছে।',
         highlightTag: 'প্রতিষ্ঠিত ২০১৯ (৫+ বছর সক্রিয়)',
         bulletPoints: [
           '২০১৯: যুক্তরাজ্যে প্রাতিষ্ঠানিক লিকুইডিটি পার্টনারশিপের মাধ্যমে আনুষ্ঠানিকভাবে যাত্রা শুরু।',
@@ -247,7 +247,7 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
         id: 3,
         iconName: 'Layers',
         question: '৩. আমাদের প্ল্যাটফর্মটি মূলত কীভাবে চলে (True ECN / STP মেকানিজম)?',
-        answer: 'Forex Trade Pro একটি নন-ডিলিং ডেস্ক (NDD) ব্রোকার হিসেবে কাজ করে, যা True ECN (ইলেকট্রনিক কমিউনিকেশন নেটওয়ার্ক) ও STP (স্ট্রেইট-থ্রু প্রসেসিং) প্রযুক্তির মাধ্যমে সরাসরি পরিচালিত। কোনো প্রকার ম্যানুয়াল হস্তক্ষেপ ছাড়াই প্রতিটি অর্ডার সরাসরি আন্তর্জাতিক ব্যাংকিং পুলে এক্সিকিউট হয়।',
+        answer: 'FXBY24 একটি নন-ডিলিং ডেস্ক (NDD) ব্রোকার হিসেবে কাজ করে, যা True ECN (ইলেকট্রনিক কমিউনিকেশন নেটওয়ার্ক) ও STP (স্ট্রেইট-থ্রু প্রসেসিং) প্রযুক্তির মাধ্যমে সরাসরি পরিচালিত। কোনো প্রকার ম্যানুয়াল হস্তক্ষেপ ছাড়াই প্রতিটি অর্ডার সরাসরি আন্তর্জাতিক ব্যাংকিং পুলে এক্সিকিউট হয়।',
         highlightTag: 'নন-ডিলিং ডেস্ক (True ECN/STP)',
         bulletPoints: [
           'টিয়ার-১ আন্তর্জাতিক ব্যাংক লিকুইডিটি প্রোভাইডারদের (বার্কলেজ, ডয়েচে ব্যাংক, ইউবিএস, সিটিব্যাংক) সাথে ডিরেক্ট কানেকশন।',
@@ -259,7 +259,7 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
         id: 4,
         iconName: 'Globe2',
         question: '৪. আমাদের কোম্পানি বিশ্বব্যাপী কয়টি দেশে তাদের সেবা পরিচালনা করছে?',
-        answer: 'Forex Trade Pro বর্তমানে বিশ্বের ১৩০টিরও বেশি দেশে (130+ Countries) সক্রিয়ভাবে আন্তর্জাতিক ফরেক্স, কমোডিটি ও ডিজিটাল অ্যাসেট ট্রেডিং সেবা পরিচালনা করছে।',
+        answer: 'FXBY24 বর্তমানে বিশ্বের ১৩০টিরও বেশি দেশে (130+ Countries) সক্রিয়ভাবে আন্তর্জাতিক ফরেক্স, কমোডিটি ও ডিজিটাল অ্যাসেট ট্রেডিং সেবা পরিচালনা করছে।',
         highlightTag: 'বিশ্বের ১৩০+ দেশে পরিচালিত',
         bulletPoints: [
           'ইউরোপ অঞ্চল: যুক্তরাজ্য, জার্মানি, ফ্রান্স, স্পেন, ইতালি, নেদারল্যান্ডস।',
@@ -272,7 +272,7 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
         id: 5,
         iconName: 'Scale',
         question: '৫. কোম্পানির অফিশিয়াল ফিন্যান্সিয়াল লাইসেন্স ও আইনি বৈধতা কী কী?',
-        answer: 'Forex Trade Pro আন্তর্জাতিক আর্থিক আইন ও রেগুলেটরি ফ্রেমওয়ার্ক অনুযায়ী নিবন্ধিত ও অনুমোদিত একটি প্রতিষ্ঠান:',
+        answer: 'FXBY24 আন্তর্জাতিক আর্থিক আইন ও রেগুলেটরি ফ্রেমওয়ার্ক অনুযায়ী নিবন্ধিত ও অনুমোদিত একটি প্রতিষ্ঠান:',
         highlightTag: 'আইনগতভাবে নিবন্ধিত ও অডিটকৃত',
         bulletPoints: [
           'যুক্তরাজ্যের কোম্পানিজ হাউস কর্পোরেট রেজিস্ট্রেশন নং: #11984205 (Fintech & Brokerage Services)।',
@@ -310,7 +310,7 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
         id: 8,
         iconName: 'Award',
         question: '৮. ১০০% ওয়েলকাম ডিপোজিট বোনাস এবং $২৫ UID রেফারেল রিওয়ার্ড সিস্টেম কীভাবে কাজ করে?',
-        answer: 'ট্রেডারদের ব্যালেন্স শক্তিশালী করতে এবং রেফারেল পার্টনারদের উৎসাহ দিতে Forex Trade Pro ইন্ডাস্ট্রি-সেরা বোনাস ও রিওয়ার্ড অফার করে থাকে।',
+        answer: 'ট্রেডারদের ব্যালেন্স শক্তিশালী করতে এবং রেফারেল পার্টনারদের উৎসাহ দিতে FXBY24 ইন্ডাস্ট্রি-সেরা বোনাস ও রিওয়ার্ড অফার করে থাকে।',
         highlightTag: '১০০% বোনাস ও $২৫ UID রিওয়ার্ড',
         bulletPoints: [
           '১০০% ওয়েলকাম বোনাস: প্রথম ডিপোজিটে ১০০% পর্যন্ত অতিরিক্ত ব্যালেন্স যুক্ত হয়ে ট্রেডিং মার্জিন বৃদ্ধি করে।',
@@ -321,10 +321,10 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     ]
   },
   hi: {
-    title: 'Forex Trade Pro कंपनी विवरण',
+    title: 'FXBY24 कंपनी विवरण',
     subtitle: 'आधिकारिक कंपनी प्रोफाइल, कानूनी पंजीकरण और वित्तीय अनुपालन',
     badge: 'सत्यापित और विनियमित इकाई',
-    companyName: 'Forex Trade Pro International Ltd.',
+    companyName: 'FXBY24 International Ltd.',
     establishedText: '2019 में स्थापित • 5+ वर्षों की बाजार उत्कृष्टता',
     headquartersText: 'लंदन, यूनाइटेड किंगडम (वैश्विक मुख्यालय)',
     operatingCountriesText: 'दुनिया भर के 130+ देशों में सक्रिय संचालन',
@@ -338,14 +338,14 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     certAuthority: 'यूके रजिस्ट्रार ऑफ कंपनीज और ग्लोबल मल्टी-एसेट अथॉरिटी',
     certDate: 'निगमन तिथि: 14 मई 2019',
     certJurisdiction: 'लंदन वित्तीय जिला, इंग्लैंड और वेल्स',
-    footerComplianceText: 'Forex Trade Pro टियर-1 बैंकिंग पृथक्करण, AML/KYC निर्देशों और MiFID II यूरोपीय वित्तीय ढांचे का कड़ाई से पालन करता है।',
+    footerComplianceText: 'FXBY24 टियर-1 बैंकिंग पृथक्करण, AML/KYC निर्देशों और MiFID II यूरोपीय वित्तीय ढांचे का कड़ाई से पालन करता है।',
     closeBtn: 'विंडो बंद करें',
     qaList: [
       {
         id: 1,
         iconName: 'Building2',
         question: '1. हमारी कंपनी किस देश से संचालित होती है और इसका मुख्यालय कहाँ है?',
-        answer: 'Forex Trade Pro एक अंतरराष्ट्रीय फिनटेक ब्रोकरेज है जिसका मुख्यालय लंदन, यूनाइटेड किंगडम (UK) में स्थित है। इसके परिचालन कार्यालय और प्राथमिक क्लाउड सर्वर लंदन के वित्तीय जिले से प्रबंधित होते हैं।',
+        answer: 'FXBY24 एक अंतरराष्ट्रीय फिनटेक ब्रोकरेज है जिसका मुख्यालय लंदन, यूनाइटेड किंगडम (UK) में स्थित है। इसके परिचालन कार्यालय और प्राथमिक क्लाउड सर्वर लंदन के वित्तीय जिले से प्रबंधित होते हैं।',
         highlightTag: 'लंदन, यूनाइटेड किंगडम (UK)',
         bulletPoints: [
           'मुख्यालय: 25 Bank Street, Canary Wharf, London, E14 5JP, UK.',
@@ -356,7 +356,7 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
         id: 2,
         iconName: 'Clock',
         question: '2. कंपनी की स्थापना कब हुई और इसका परिचालन इतिहास क्या है?',
-        answer: 'Forex Trade Pro की स्थापना मई 2019 में हुई थी। पिछले 5+ वर्षों में, कंपनी दुनिया भर में 480,000+ सक्रिय ग्राहकों की सेवा करने वाले एक विश्वसनीय ट्रेडिंग प्लेटफॉर्म के रूप में विकसित हुई है।',
+        answer: 'FXBY24 की स्थापना मई 2019 में हुई थी। पिछले 5+ वर्षों में, कंपनी दुनिया भर में 480,000+ सक्रिय ग्राहकों की सेवा करने वाले एक विश्वसनीय ट्रेडिंग प्लेटफॉर्म के रूप में विकसित हुई है।',
         highlightTag: 'मई 2019 में स्थापित (5+ वर्ष)',
         bulletPoints: [
           '2019: यूके में संस्थागत तरलता साझेदारी के साथ शुरू हुआ।',
@@ -368,7 +368,7 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
         id: 3,
         iconName: 'Layers',
         question: '3. यह प्लेटफॉर्म कैसे संचालित होता है (True ECN / STP मैकेनिज्म)?',
-        answer: 'Forex Trade Pro नॉन-डीलिंग डेस्क (NDD) तकनीक और True ECN/STP पर काम करता है। ऑर्डर सीधे टियर-1 बैंकों के तरलता पूल में बिना किसी मैन्युअल हस्तक्षेप के निष्पादित होते हैं।',
+        answer: 'FXBY24 नॉन-डीलिंग डेस्क (NDD) तकनीक और True ECN/STP पर काम करता है। ऑर्डर सीधे टियर-1 बैंकों के तरलता पूल में बिना किसी मैन्युअल हस्तक्षेप के निष्पादित होते हैं।',
         highlightTag: 'Non-Dealing Desk (True ECN/STP)',
         bulletPoints: [
           'प्रमुख अंतरराष्ट्रीय बैंकों (Barclays, Deutsche Bank, UBS) के साथ सीधा जुड़ाव।',
@@ -378,8 +378,8 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
       {
         id: 4,
         iconName: 'Globe2',
-        question: '4. Forex Trade Pro दुनिया भर में कितने देशों में सेवाएं प्रदान करता है?',
-        answer: 'Forex Trade Pro वर्तमान में यूरोप, एशिया-प्रशांत, मध्य पूर्व, लैटिन अमेरिका और अफ्रीका के 130 से अधिक देशों (130+ Countries) में सक्रिय रूप से सेवाएं प्रदान करता है।',
+        question: '4. FXBY24 दुनिया भर में कितने देशों में सेवाएं प्रदान करता है?',
+        answer: 'FXBY24 वर्तमान में यूरोप, एशिया-प्रशांत, मध्य पूर्व, लैटिन अमेरिका और अफ्रीका के 130 से अधिक देशों (130+ Countries) में सक्रिय रूप से सेवाएं प्रदान करता है।',
         highlightTag: 'दुनिया भर के 130+ देश',
         bulletPoints: [
           'यूरोप, एशिया (भारत, बांग्लादेश, सिंगापुर), मध्य पूर्व (यूएई, सऊदी अरब) और अफ्रीका।'
@@ -411,10 +411,10 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     ]
   },
   ar: {
-    title: 'نبذة عن شركة Forex Trade Pro',
+    title: 'نبذة عن شركة FXBY24',
     subtitle: 'الملف التعريفي للشركة والتراخيص القانونية والامتثال المالي الدولي',
     badge: 'كيان معتمد ومرخص دولياً',
-    companyName: 'Forex Trade Pro International Ltd.',
+    companyName: 'FXBY24 International Ltd.',
     establishedText: 'تأسست عام 2019 • أكثر من 5 سنوات من التميز المالي',
     headquartersText: 'لندن، المملكة المتحدة (المقر الرئيسي العالمي)',
     operatingCountriesText: 'نعمل في أكثر من 130 دولة حول العالم',
@@ -428,14 +428,14 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     certAuthority: 'هيئة تسجيل الشركات البريطانية وهيئة الأصول المتعددة الدولية',
     certDate: 'تاريخ التأسيس: 14 مايو 2019',
     certJurisdiction: 'حي لندن المالي، إنجلترا وويلز',
-    footerComplianceText: 'تلتزم Forex Trade Pro بفصل أموال العملاء في بنوك الفئة الأولى ومعايير مكافحة غسيل الأموال (AML/KYC).',
+    footerComplianceText: 'تلتزم FXBY24 بفصل أموال العملاء في بنوك الفئة الأولى ومعايير مكافحة غسيل الأموال (AML/KYC).',
     closeBtn: 'إغلاق النافذة',
     qaList: [
       {
         id: 1,
         iconName: 'Building2',
         question: '1. من أي دولة تعمل الشركة وأين يقع مقرها الرئيسي؟',
-        answer: 'تعمل Forex Trade Pro انطلاقاً من العاصمة لندن في المملكة المتحدة (UK)، حيث يقع مقرها الرئيسي وخوادم التداول السحابية فائقة السرعة في قلب الحي المالي بلندن.',
+        answer: 'تعمل FXBY24 انطلاقاً من العاصمة لندن في المملكة المتحدة (UK)، حيث يقع مقرها الرئيسي وخوادم التداول السحابية فائقة السرعة في قلب الحي المالي بلندن.',
         highlightTag: 'لندن، المملكة المتحدة',
         bulletPoints: [
           'المقر الرئيسي: 25 Bank Street, Canary Wharf, London, United Kingdom.',
@@ -467,7 +467,7 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
       {
         id: 4,
         iconName: 'Globe2',
-        question: '4. كم عدد الدول التي تقدم فيها Forex Trade Pro خدماتها؟',
+        question: '4. كم عدد الدول التي تقدم فيها FXBY24 خدماتها؟',
         answer: 'تقدم الشركة خدماتها التداولية في أكثر من 130 دولة حول العالم في أوروبا والشرق الأوسط وآسيا وإفريقيا وأمريكا اللاتينية.',
         highlightTag: 'أكثر من 130 دولة',
         bulletPoints: [
@@ -488,10 +488,10 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     ]
   },
   es: {
-    title: 'Acerca de Forex Trade Pro',
+    title: 'Acerca de FXBY24',
     subtitle: 'Perfil Corporativo Oficial, Registro Legal y Licencias Financieras',
     badge: 'Entidad Verificada y Regulada',
-    companyName: 'Forex Trade Pro International Ltd.',
+    companyName: 'FXBY24 International Ltd.',
     establishedText: 'Fundada en 2019 • Más de 5 años de excelencia',
     headquartersText: 'Londres, Reino Unido (Sede Central Global)',
     operatingCountriesText: 'Operando en más de 130 países en todo el mundo',
@@ -505,14 +505,14 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     certAuthority: 'UK Registrar of Companies & Global Multi-Asset Authority',
     certDate: 'Fecha de Registro: 14 de Mayo de 2019',
     certJurisdiction: 'Distrito Financiero de Londres, Inglaterra',
-    footerComplianceText: 'Forex Trade Pro cumple rigurosamente con cuentas segregadas en bancos Tier-1 y normativas AML/KYC.',
+    footerComplianceText: 'FXBY24 cumple rigurosamente con cuentas segregadas en bancos Tier-1 y normativas AML/KYC.',
     closeBtn: 'Cerrar Ventana',
     qaList: [
       {
         id: 1,
         iconName: 'Building2',
         question: '1. ¿En qué país está basada la empresa y dónde está su sede central?',
-        answer: 'Forex Trade Pro tiene su sede principal en Londres, Reino Unido (UK), con servidores de enrutamiento en los principales centros financieros europeos.',
+        answer: 'FXBY24 tiene su sede principal en Londres, Reino Unido (UK), con servidores de enrutamiento en los principales centros financieros europeos.',
         highlightTag: 'Londres, Reino Unido',
         bulletPoints: [
           'Sede Global: 25 Bank Street, Canary Wharf, London, UK.',
@@ -544,10 +544,10 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     ]
   },
   fr: {
-    title: 'À Propos de Forex Trade Pro',
+    title: 'À Propos de FXBY24',
     subtitle: 'Profil Officiel de l\'Entreprise, Enregistrements Légaux et Conformité',
     badge: 'Entité Agréée et Régulée',
-    companyName: 'Forex Trade Pro International Ltd.',
+    companyName: 'FXBY24 International Ltd.',
     establishedText: 'Établie en 2019 • Plus de 5 ans d\'excellence',
     headquartersText: 'Londres, Royaume-Uni (Siège Mondial)',
     operatingCountriesText: 'Présente dans plus de 130 pays',
@@ -561,14 +561,14 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     certAuthority: 'UK Registrar of Companies & Global Multi-Asset Authority',
     certDate: 'Date d\'enregistrement : 14 Mai 2019',
     certJurisdiction: 'District Financier de Londres, Angleterre',
-    footerComplianceText: 'Forex Trade Pro applique la ségrégation des fonds de niveau 1 et les directives AML/KYC.',
+    footerComplianceText: 'FXBY24 applique la ségrégation des fonds de niveau 1 et les directives AML/KYC.',
     closeBtn: 'Fermer',
     qaList: [
       {
         id: 1,
         iconName: 'Building2',
         question: '1. Dans quel pays l\'entreprise est-elle basée et où se trouve le siège ?',
-        answer: 'Forex Trade Pro a son siège mondial à Londres, au Royaume-Uni (UK), au cœur du quartier financier de Canary Wharf.',
+        answer: 'FXBY24 a son siège mondial à Londres, au Royaume-Uni (UK), au cœur du quartier financier de Canary Wharf.',
         highlightTag: 'Londres, Royaume-Uni',
         bulletPoints: [
           'Siège social : 25 Bank Street, Canary Wharf, Londres.',
@@ -589,10 +589,10 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     ]
   },
   de: {
-    title: 'Über Forex Trade Pro',
+    title: 'Über FXBY24',
     subtitle: 'Offizielles Unternehmensprofil, Rechtliche Registrierung & Lizenzen',
     badge: 'Verifizierte & Regulierte Institution',
-    companyName: 'Forex Trade Pro International Ltd.',
+    companyName: 'FXBY24 International Ltd.',
     establishedText: 'Gegründet 2019 • Über 5 Jahre Markterfahrung',
     headquartersText: 'London, Vereinigtes Königreich (Hauptsitz)',
     operatingCountriesText: 'Aktiv in über 130 Ländern weltweit',
@@ -606,14 +606,14 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     certAuthority: 'UK Registrar of Companies & Global Multi-Asset Authority',
     certDate: 'Gründungsdatum: 14. Mai 2019',
     certJurisdiction: 'London Financial District, England & Wales',
-    footerComplianceText: 'Forex Trade Pro hält sich streng an segregierte Kundengelder bei Tier-1-Banken und AML/KYC-Vorgaben.',
+    footerComplianceText: 'FXBY24 hält sich streng an segregierte Kundengelder bei Tier-1-Banken und AML/KYC-Vorgaben.',
     closeBtn: 'Schließen',
     qaList: [
       {
         id: 1,
         iconName: 'Building2',
         question: '1. In welchem Land hat das Unternehmen seinen Hauptsitz?',
-        answer: 'Forex Trade Pro hat seinen globalen Hauptsitz in London, Vereinigtes Königreich (UK).',
+        answer: 'FXBY24 hat seinen globalen Hauptsitz in London, Vereinigtes Königreich (UK).',
         highlightTag: 'London, UK',
         bulletPoints: [
           'Hauptsitz: 25 Bank Street, Canary Wharf, London, UK.',
@@ -623,10 +623,10 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     ]
   },
   pt: {
-    title: 'Sobre a Forex Trade Pro',
+    title: 'Sobre a FXBY24',
     subtitle: 'Perfil Corporativo Oficial, Registro Legal e Licenças Financeiras',
     badge: 'Entidade Verificada e Regulada',
-    companyName: 'Forex Trade Pro International Ltd.',
+    companyName: 'FXBY24 International Ltd.',
     establishedText: 'Fundada em 2019 • Mais de 5 anos de excelência',
     headquartersText: 'Londres, Reino Unido (Sede Global)',
     operatingCountriesText: 'Operando em mais de 130 países',
@@ -640,14 +640,14 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     certAuthority: 'UK Registrar of Companies & Global Multi-Asset Authority',
     certDate: 'Data de Fundação: 14 de Maio de 2019',
     certJurisdiction: 'Distrito Financeiro de Londres, Inglaterra',
-    footerComplianceText: 'A Forex Trade Pro adere rigorosamente à segregação de fundos em bancos Tier-1 e normas AML/KYC.',
+    footerComplianceText: 'A FXBY24 adere rigorosamente à segregação de fundos em bancos Tier-1 e normas AML/KYC.',
     closeBtn: 'Fechar',
     qaList: [
       {
         id: 1,
         iconName: 'Building2',
         question: '1. Onde está sediada a empresa e onde fica a sede global?',
-        answer: 'A Forex Trade Pro está sediada em Londres, Reino Unido (UK), no coração do distrito financeiro.',
+        answer: 'A FXBY24 está sediada em Londres, Reino Unido (UK), no coração do distrito financeiro.',
         highlightTag: 'Londres, Reino Unido',
         bulletPoints: [
           'Sede Global: 25 Bank Street, Canary Wharf, Londres.',
@@ -657,10 +657,10 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     ]
   },
   zh: {
-    title: '关于 Forex Trade Pro',
+    title: '关于 FXBY24',
     subtitle: '官方企业简介、法律注册与国际金融合规牌照',
     badge: '官方认证与受监管实体',
-    companyName: 'Forex Trade Pro International Ltd.',
+    companyName: 'FXBY24 International Ltd.',
     establishedText: '成立于 2019 年 • 超过 5 年的全球市场经验',
     headquartersText: '英国伦敦 (全球总部)',
     operatingCountriesText: '在全球 130 多个国家开展业务',
@@ -674,14 +674,14 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     certAuthority: '英国公司注册处及全球多资产监管局',
     certDate: '注册日期: 2019 年 5 月 14 日',
     certJurisdiction: '伦敦金融区, 英格兰与威尔士',
-    footerComplianceText: 'Forex Trade Pro 严格执行一级银行资金隔离管理及 AML/KYC 国际反洗钱合规政策。',
+    footerComplianceText: 'FXBY24 严格执行一级银行资金隔离管理及 AML/KYC 国际反洗钱合规政策。',
     closeBtn: '关闭窗口',
     qaList: [
       {
         id: 1,
         iconName: 'Building2',
         question: '1. 公司总部位于哪个国家？',
-        answer: 'Forex Trade Pro 总部设在英国伦敦，其核心运营中心及超低延迟云数据中心均位于伦敦金融区。',
+        answer: 'FXBY24 总部设在英国伦敦，其核心运营中心及超低延迟云数据中心均位于伦敦金融区。',
         highlightTag: '英国伦敦 (UK)',
         bulletPoints: [
           '全球总部: 25 Bank Street, Canary Wharf, London, UK.',
@@ -691,10 +691,10 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     ]
   },
   ru: {
-    title: 'О компании Forex Trade Pro',
+    title: 'О компании FXBY24',
     subtitle: 'Официальный профиль компании, юридическая регистрация и лицензии',
     badge: 'Верифицированная и регулируемая организация',
-    companyName: 'Forex Trade Pro International Ltd.',
+    companyName: 'FXBY24 International Ltd.',
     establishedText: 'Основана в 2019 году • Более 5 лет опыта на мировом рынке',
     headquartersText: 'Лондон, Великобритания (Глобальная штаб-квартира)',
     operatingCountriesText: 'Работает более чем в 130 странах мира',
@@ -708,14 +708,14 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     certAuthority: 'UK Registrar of Companies & Global Multi-Asset Authority',
     certDate: 'Дата регистрации: 14 мая 2019 г.',
     certJurisdiction: 'Финансовый район Лондона, Англия',
-    footerComplianceText: 'Forex Trade Pro строго соблюдает сегрегацию клиентских счетов в банках Tier-1 и нормы AML/KYC.',
+    footerComplianceText: 'FXBY24 строго соблюдает сегрегацию клиентских счетов в банках Tier-1 и нормы AML/KYC.',
     closeBtn: 'Закрыть',
     qaList: [
       {
         id: 1,
         iconName: 'Building2',
         question: '1. В какой стране находится штаб-квартира компании?',
-        answer: 'Компания Forex Trade Pro базируется в Лондоне, Великобритания (UK).',
+        answer: 'Компания FXBY24 базируется в Лондоне, Великобритания (UK).',
         highlightTag: 'Лондон, Великобритания',
         bulletPoints: [
           'Штаб-квартира: 25 Bank Street, Canary Wharf, London, UK.',
@@ -725,10 +725,10 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     ]
   },
   tr: {
-    title: 'Forex Trade Pro Hakkında',
+    title: 'FXBY24 Hakkında',
     subtitle: 'Resmi Şirket Profili, Yasal Kayıtlar ve Finansal Lisanslar',
     badge: 'Doğrulanmış ve Düzenlenen Kuruluş',
-    companyName: 'Forex Trade Pro International Ltd.',
+    companyName: 'FXBY24 International Ltd.',
     establishedText: '2019 Yılında Kuruldu • 5+ Yıllık Piyasa Tecrübesi',
     headquartersText: 'Londra, Birleşik Krallık (Küresel Genel Merkez)',
     operatingCountriesText: 'Dünya Genelinde 130+ Ülkede Faaliyet',
@@ -742,14 +742,14 @@ const TRANSLATIONS: Record<LanguageCode, TranslationContent> = {
     certAuthority: 'UK Registrar of Companies & Global Multi-Asset Authority',
     certDate: 'Kuruluş Tarihi: 14 Mayıs 2019',
     certJurisdiction: 'Londra Finans Merkezi, İngiltere',
-    footerComplianceText: 'Forex Trade Pro, Tier-1 bankalarda ayrılmış müşteri fonları ve AML/KYC direktiflerine tam uyum sağlar.',
+    footerComplianceText: 'FXBY24, Tier-1 bankalarda ayrılmış müşteri fonları ve AML/KYC direktiflerine tam uyum sağlar.',
     closeBtn: 'Kapat',
     qaList: [
       {
         id: 1,
         iconName: 'Building2',
         question: '1. Şirket hangi ülkede kurulmuştur ve merkezi nerededir?',
-        answer: 'Forex Trade Pro, Birleşik Krallık (Londra, Birleşik Krallık) merkezli uluslararası bir fintech platformudur.',
+        answer: 'FXBY24, Birleşik Krallık (Londra, Birleşik Krallık) merkezli uluslararası bir fintech platformudur.',
         highlightTag: 'Londra, Birleşik Krallık',
         bulletPoints: [
           'Genel Merkez: 25 Bank Street, Canary Wharf, Londra, İngiltere.',

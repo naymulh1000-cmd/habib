@@ -86,7 +86,7 @@ export const AdminLoginCard: React.FC<AdminLoginCardProps> = ({
 
       // Grant Admin Session
       onAdminLoginSuccess({
-        email: adminEmail || 'admin@forextradepro.com',
+        email: adminEmail || 'admin@fxby24.com',
         role: assignedRole,
         token: 'ADM-SESSION-' + Date.now()
       });
@@ -120,7 +120,7 @@ export const AdminLoginCard: React.FC<AdminLoginCardProps> = ({
               STRICTLY RESTRICTED ACCESS
             </span>
             <h1 className="text-2xl font-black text-white tracking-tight">
-              Forex Pro <span className="text-[#F5B301]">Admin Portal</span>
+              FXBY24 <span className="text-[#F5B301]">Admin Portal</span>
             </h1>
             <p className="text-xs text-gray-400 mt-1">
               Standalone Management Console for Authorized Personnel
@@ -156,7 +156,7 @@ export const AdminLoginCard: React.FC<AdminLoginCardProps> = ({
                 required
                 value={adminEmail}
                 onChange={(e) => setAdminEmail(e.target.value)}
-                placeholder="admin@forextradepro.com"
+                placeholder="admin@fxby24.com"
                 className="w-full px-4 py-3 pl-11 bg-gray-900/90 border border-gray-800 rounded-2xl text-xs text-white placeholder-gray-500 outline-none focus:border-[#F5B301] focus:ring-1 focus:ring-[#F5B301] transition-all"
               />
               <UserCheck className="w-4 h-4 text-gray-500 absolute left-3.5 top-3.5" />

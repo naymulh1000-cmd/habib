@@ -49,7 +49,7 @@ export const FeedbackModal: React.FC<FeedbackModalProps> = ({ isOpen, onClose })
             <div className="py-8 text-center space-y-2">
               <CheckCircle2 className="w-12 h-12 text-emerald-400 mx-auto" />
               <p className="text-sm font-bold text-emerald-300">Thank You For Your Feedback!</p>
-              <p className="text-xs text-gray-400">Your review helps us improve Forex Trade Pro.</p>
+              <p className="text-xs text-gray-400">Your review helps us improve FXBY24.</p>
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">

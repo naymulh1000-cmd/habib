@@ -168,7 +168,7 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
                   Change Password
                 </h3>
                 <p className="text-[11px] text-gray-400">
-                  Update your Forex Trade Pro login password
+                  Update your FXBY24 login password
                 </p>
               </div>
             </div>

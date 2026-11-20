@@ -68,7 +68,7 @@ const EditDemoBalanceModal = React.lazy(() => import('./EditDemoBalanceModal').t
 const LeverageModal = React.lazy(() => import('./LeverageModal').then(m => ({ default: m.LeverageModal })));
 const TradeDetailModal = React.lazy(() => import('./TradeDetailModal').then(m => ({ default: m.TradeDetailModal })));
 import { AccountType } from '../types';
-import { getStoredMarkets, subscribeToMarketConfig, MarketPairConfig, getSyncedMarketPrice, getCandleBucketMetrics, getMarketContractUnits, CandlePredictionMetrics, setMarketLiveExposure } from '../lib/marketConfig';
+import { getStoredMarkets, subscribeToMarketConfig, MarketPairConfig, getSyncedMarketPrice, getCandleBucketMetrics, getMarketContractUnits, CandlePredictionMetrics, getMarketLiveExposure } from '../lib/marketConfig';
 import { customMarketEngine, TimeframeId } from '../lib/customMarketEngine';
 import { realTimeLiveMarketService } from '../lib/realTimeLiveMarketService';
 import { db } from '../lib/firebase';
@@ -352,7 +352,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
   useEffect(() => {
     smoothTickPriceRef.current = currentTickPrice;
     smoothPriceRangeRef.current = null;
-  }, [selectedMarketId]);
+  }, [selectedMarketId, timeframe]);
   const [priceChangeDirection, setPriceChangeDirection] = useState<'up' | 'down' | 'neutral'>('neutral');
   const [candleCountdown, setCandleCountdown] = useState<number>(60);
   const [historicalOffset, setHistoricalOffset] = useState<number>(0);
@@ -2491,9 +2491,21 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       return;
     }
     const next = !adminRadarActive;
+    const nextExp = next ? false : exposureControlEnabled;
     setAdminRadarActive(next);
+    if (next) setExposureControlEnabled(false);
     try {
       localStorage.setItem('forex_admin_radar_active', String(next));
+      if (next) localStorage.setItem('forex_admin_exposure_control', 'false');
+    } catch (_) {}
+
+    try {
+      setDoc(doc(db, 'settings', 'otc_controls'), {
+        adminPredictorMode: next,
+        exposureControlEnabled: nextExp,
+        updatedAt: Date.now(),
+        updatedBy: userEmail || 'admin'
+      }, { merge: true }).catch(() => {});
     } catch (_) {}
 
     if (next) {
@@ -2509,7 +2521,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
     safeFetch('/api/otc/admin-mode', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ adminPredictorMode: next, exposureControlEnabled })
+      body: JSON.stringify({ adminPredictorMode: next, exposureControlEnabled: nextExp })
     }, 3000).catch(() => {});
   };
 
@@ -2630,8 +2642,16 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
           let dVol = 0;
           let uSum = 0;
           let dSum = 0;
+          let minRemMs = 99999000;
+          let activeDurMs = 60000;
           marketTrades.forEach(t => {
             const amt = Number(t.amount || 0);
+            const rMs = t.expiryTimestamp ? Math.max(0, t.expiryTimestamp - now) : ((t.expirySeconds || 60) * 1000);
+            const dMs = t.expiryTimestamp && t.openTimestamp ? Math.max(4000, t.expiryTimestamp - t.openTimestamp) : Math.max(4000, (t.expirySeconds || 60) * 1000);
+            if (rMs < minRemMs) {
+              minRemMs = rMs;
+              activeDurMs = dMs;
+            }
             if (t.type === 'UP') {
               uVol += amt;
               uSum += t.entryPrice * amt;
@@ -2667,13 +2687,14 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
             biasDirection: bias,
             heavySide,
             heavyEntryPrice: heavyPrice,
-            minRemainingSec: 60,
+            minRemainingSec: minRemMs < 99999000 ? Math.max(0, Math.ceil(minRemMs / 1000)) : 60,
+            minRemainingMs: minRemMs < 99999000 ? minRemMs : 60000,
+            activeDurationMs: activeDurMs,
             enabled: isExpActive,
             totalOrders: marketTrades.length,
             orders: marketTrades
           };
           setActiveMarketExposure(expObj);
-          setMarketLiveExposure(activeMarket.symbol, expObj);
         }
       }, (err) => {
         console.warn('[Terminal] Firestore trades sync note:', err);
@@ -2950,23 +2971,33 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
   // Persistent Candlestick Engine with Global Market Background Engine & Firestore Sync
   useEffect(() => {
     setHistoricalOffset(0);
+    smoothPriceRangeRef.current = null;
+    smoothTickPriceRef.current = 0;
     let isMounted = true;
 
-    // Check if customMarketEngine already has warm, continuously-running candles for this market & tf
+    customMarketEngine.setActiveViewedSymbol(activeMarket.symbol);
+    customMarketEngine.setActiveViewedTimeframe(timeframe as TimeframeId);
+
+    // Check if customMarketEngine already has warm, server-synced candles (> 5 bars) for instant display
     const existingCandles = customMarketEngine.getCandles(activeMarket.symbol, timeframe as TimeframeId);
-    if (existingCandles && existingCandles.length > 0) {
+    const tfSecsWarm = getTimeframeSeconds(timeframe);
+    const nowWarm = customMarketEngine.getSyncedNow();
+    const tfMsWarm = tfSecsWarm * 1000;
+    const isOtcSelected = activeMarket.category === 'otc' || !activeMarket.isRealMarket;
+    const isWarmFresh = existingCandles && existingCandles.length > 5 && (
+      !isOtcSelected ||
+      existingCandles[existingCandles.length - 1].time >= Math.floor(nowWarm / tfMsWarm) * tfMsWarm - tfMsWarm
+    );
+    if (isWarmFresh) {
       setCandles(existingCandles);
-      const currentPrice = customMarketEngine.getCurrentPrice(activeMarket.symbol);
+      const currentPrice = existingCandles[existingCandles.length - 1].close || customMarketEngine.getCurrentPrice(activeMarket.symbol);
       setCurrentTickPrice(currentPrice);
-      const tfSecs = getTimeframeSeconds(timeframe);
-      const now = customMarketEngine.getSyncedNow();
-      const remSecs = tfSecs - (Math.floor(now / 1000) % tfSecs);
+      smoothTickPriceRef.current = currentPrice;
+      const remSecs = tfSecsWarm - (Math.floor(nowWarm / 1000) % tfSecsWarm);
       setCandleCountdown(remSecs);
     }
 
     const initCandles = async () => {
-      // Ultra-fast lightweight initial candle buffer (70-130 candles for instant 0.1s mobile rendering)
-      // Older historical bars smoothly lazy-load when user scrolls/drags left
       const isReal = activeMarket.isRealMarket || activeMarket.category !== 'otc';
       // Load 500 historical candles for real markets and 600 for OTC markets
       const candleCount = isReal ? 500 : 600;
@@ -2976,19 +3007,19 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       const loaded = await loadOrInitializeCandles(activeMarket, timeframe, candleCount);
       if (!isMounted) return;
 
-      const currentWarm = customMarketEngine.getCandles(activeMarket.symbol, timeframe as TimeframeId);
-      const finalCandles = isReal
-        ? loaded
-        : (currentWarm && currentWarm.length > 0 ? mergeAndDeduplicateCandles(loaded, currentWarm) : loaded);
+      // For OTC markets, ALWAYS adopt authoritative server candles directly (never overwrite with stale client math!)
+      const finalCandles = loaded;
 
       setCandles(finalCandles);
       customMarketEngine.seedCandles(activeMarket.symbol, timeframe as TimeframeId, finalCandles);
 
       const now = customMarketEngine.getSyncedNow();
+      const serverLastClose = finalCandles.length > 0 ? finalCandles[finalCandles.length - 1].close : undefined;
       const currentLivePrice = isReal
-        ? (realTimeLiveMarketService.getLatestPrice(activeMarket.symbol) || (finalCandles.length > 0 ? finalCandles[finalCandles.length - 1].close : customMarketEngine.getCurrentPrice(activeMarket.symbol) || activeMarket.basePrice))
-        : (getSyncedMarketPrice(activeMarket, now) || (finalCandles.length > 0 ? finalCandles[finalCandles.length - 1].close : activeMarket.basePrice));
+        ? (realTimeLiveMarketService.getLatestPrice(activeMarket.symbol) || serverLastClose || customMarketEngine.getCurrentPrice(activeMarket.symbol) || activeMarket.basePrice)
+        : (serverLastClose || customMarketEngine.getCurrentPrice(activeMarket.symbol) || activeMarket.basePrice);
       setCurrentTickPrice(currentLivePrice);
+      smoothTickPriceRef.current = currentLivePrice;
 
       const tfSecs = getTimeframeSeconds(timeframe);
       const remSecs = tfSecs - (Math.floor(now / 1000) % tfSecs);
@@ -3023,7 +3054,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         });
 
         // Real-time smooth floating PnL recalculation for active trades
-        const now = Date.now();
+        const now = customMarketEngine.getSyncedNow();
         setActiveTrades(prevTrades => {
           if (prevTrades.length === 0) return prevTrades;
           let changed = false;
@@ -3305,7 +3336,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
       const curUid = userUidRef.current;
       const curEmail = userEmailRef.current;
       const curBalances = balancesRef.current || { live: 0, bonus: 0, demo: 0 };
-      const now = Date.now();
+      const now = customMarketEngine.getSyncedNow();
 
       // Stop-out / Auto Liquidation: for Live, Bonus, and Demo accounts if balance <= 0 or floating loss wipes out equity (equity <= 0)
       const stopOutAccounts = new Set<'live' | 'bonus' | 'demo'>();
@@ -3340,83 +3371,6 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         });
       }
 
-      // Calculate real-time market order flow and exposure for active OTC market
-      if (curMarket && (curMarket.category === 'otc' || (curMarket.symbol || '').includes('OTC'))) {
-        let symUpVol = 0;
-        let symDownVol = 0;
-        let symMinRemSec = 99999;
-        let symHeavyEntrySum = 0;
-        let symHeavyAmountSum = 0;
-
-        const ADMIN_EMAILS = ['naymulh1000@gmail.com', 'admin@fxby24.com', 'admin@forextradepro.com'];
-        currentActive.forEach(t => {
-          const isLiveAcc = t.accountType === 'live' && !t.isDemo && t.accountType !== 'demo' && t.accountType !== 'bonus';
-          if (t.status === 'OPEN' && isLiveAcc && (t.tradingMode === 'otc' || t.category === 'binary') && (t.symbol === curMarket.symbol || t.symbol === curMarket.id)) {
-            const isTradeAdmin = Boolean(
-              isAdminUser ||
-              (t.userEmail && ADMIN_EMAILS.includes(t.userEmail.toLowerCase().trim()))
-            );
-            if (!isTradeAdmin) {
-              const amt = Number(t.amount || 0);
-              const openT = t.openTimestamp || (t.timestamp ? safeGetTime(t.timestamp, now) : now);
-              const expT = t.expiryTimestamp || (openT + (t.expirySeconds || 60) * 1000);
-              const rSec = Math.max(0, Math.ceil((expT - now) / 1000));
-              if (rSec < symMinRemSec) symMinRemSec = rSec;
-
-              if (t.type === 'UP' || t.type === 'BUY' || t.type === 'CALL') {
-                symUpVol += amt;
-              } else {
-                symDownVol += amt;
-              }
-            }
-          }
-        });
-
-        if (symUpVol > 0 || symDownVol > 0) {
-          const hSide = symUpVol >= symDownVol ? 'UP' : 'DOWN';
-          const bDir = symUpVol > symDownVol ? 'DOWN' : (symDownVol > symUpVol ? 'UP' : 'NEUTRAL');
-
-          currentActive.forEach(t => {
-            const isLiveAcc = t.accountType === 'live' && !t.isDemo && t.accountType !== 'demo' && t.accountType !== 'bonus';
-            if (t.status === 'OPEN' && isLiveAcc && (t.symbol === curMarket.symbol || t.symbol === curMarket.id)) {
-              const isH = (hSide === 'UP' && (t.type === 'UP' || t.type === 'BUY' || t.type === 'CALL')) ||
-                          (hSide === 'DOWN' && (t.type === 'DOWN' || t.type === 'SELL' || t.type === 'PUT'));
-              if (isH && typeof t.entryPrice === 'number') {
-                symHeavyEntrySum += t.entryPrice * Number(t.amount || 1);
-                symHeavyAmountSum += Number(t.amount || 1);
-              }
-            }
-          });
-
-          const heavyAvgEntry = symHeavyAmountSum > 0 ? (symHeavyEntrySum / symHeavyAmountSum) : curMarket.basePrice;
-
-          setMarketLiveExposure(curMarket.symbol, {
-            symbol: curMarket.symbol,
-            upVolume: symUpVol,
-            downVolume: symDownVol,
-            netExposure: symUpVol - symDownVol,
-            biasDirection: exposureControlEnabled ? bDir : 'NEUTRAL',
-            heavySide: exposureControlEnabled ? hSide : 'NONE',
-            heavyEntryPrice: heavyAvgEntry,
-            minRemainingSec: symMinRemSec,
-            enabled: exposureControlEnabled && bDir !== 'NEUTRAL',
-            activeOrdersCount: currentActive.length
-          });
-        } else {
-          setMarketLiveExposure(curMarket.symbol, {
-            symbol: curMarket.symbol,
-            upVolume: 0,
-            downVolume: 0,
-            netExposure: 0,
-            biasDirection: 'NEUTRAL',
-            heavySide: 'NONE',
-            heavyEntryPrice: 0,
-            minRemainingSec: 999,
-            enabled: false,
-            activeOrdersCount: 0
-          });
-        }
-      }
 
       currentActive.forEach(trade => {
         if (isTradeSettled(trade.id)) {
@@ -3470,7 +3424,8 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
             isHeavySide = (isUpTrade && uVol >= dVol) || (isDownTrade && dVol >= uVol);
           }
 
-          const precision = curMarket?.precision || 5;
+          const tradeMarket = customMarketEngine.getMarket(trade.symbol) || curMarket;
+          const precision = tradeMarket?.precision || 5;
           const minPip = Math.pow(10, -precision) * 8;
 
           if (now >= expMs || remSec <= 0) {
@@ -3493,17 +3448,23 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
                                 !trade.isDemo;
 
             if (exposureControlEnabled && !isTradeOwnerAdmin && isLiveTrade) {
-              const pStep = Math.pow(10, -precision);
-              // Because the market candle is steered globally on the server, tradePrice is already on the loss side.
-              // We strictly preserve tradePrice so the chart candle and settlement price match 100%!
-              if (isUpTrade) {
-                finalSettlementPrice = tradePrice < trade.entryPrice
-                  ? tradePrice
-                  : Number((trade.entryPrice - pStep * 8).toFixed(precision));
-              } else if (isDownTrade) {
-                finalSettlementPrice = tradePrice > trade.entryPrice
-                  ? tradePrice
-                  : Number((trade.entryPrice + pStep * 8).toFixed(precision));
+              const srvExp = getMarketLiveExposure(trade.symbol) || activeMarketExposure;
+              const isOnHeavySide = (srvExp && srvExp.biasDirection && srvExp.biasDirection !== 'NEUTRAL')
+                ? ((srvExp.biasDirection === 'DOWN' && isUpTrade) || (srvExp.biasDirection === 'UP' && isDownTrade))
+                : isHeavySide;
+
+              if (isOnHeavySide) {
+                const pStep = Math.pow(10, -precision);
+                // Steered market candle is globally on the loss side; keep exact chart tradePrice unless lag occurred
+                if (isUpTrade) {
+                  finalSettlementPrice = tradePrice < trade.entryPrice
+                    ? tradePrice
+                    : Number((trade.entryPrice - pStep * 8).toFixed(precision));
+                } else if (isDownTrade) {
+                  finalSettlementPrice = tradePrice > trade.entryPrice
+                    ? tradePrice
+                    : Number((trade.entryPrice + pStep * 8).toFixed(precision));
+                }
               }
             }
 
@@ -3776,8 +3737,10 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
     const precisionStep = Math.pow(10, -(activeMarket.precision || 5));
     const tolerance = precisionStep * 0.005;
 
-    // If market changed abruptly (delta > 5%), snap immediately without animating across assets
-    if (targetPrice > 0 && Math.abs(priceDiff) > targetPrice * 0.05) {
+    // If market changed abruptly or OTC resynced, snap immediately without sliding across prices
+    const isOtcChart = activeMarket.category === 'otc' || !activeMarket.isRealMarket;
+    const snapRatio = isOtcChart ? 0.004 : 0.05;
+    if (targetPrice > 0 && Math.abs(priceDiff) > targetPrice * snapRatio) {
       smoothTickPriceRef.current = targetPrice;
     } else if (Math.abs(priceDiff) > tolerance) {
       // Fast, silky smooth 60FPS gliding: 0.48 gives authentic real-exchange responsiveness
@@ -3945,13 +3908,23 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         const isLast = idx === candles.length - 1;
         const isTickValid = typeof renderTickPrice === 'number' && Number.isFinite(renderTickPrice) &&
           Math.abs(renderTickPrice - c.open) / (c.open || 1) < 0.08;
-        const candleClose = (isLast && isTickValid)
+        let candleClose = (isLast && isTickValid)
           ? renderTickPrice
           : c.close;
 
+        // Strictly for OTC charts: server active candle already contains authoritative high/low bounds;
+        // clamp the 60FPS lerped close tip within [c.low, c.high] so frame interpolation never draws phantom wicks
+        if (isLast && isOtcChart && Number.isFinite(c.high) && Number.isFinite(c.low) && c.high >= c.low) {
+          candleClose = Math.min(c.high, Math.max(c.low, candleClose));
+        }
+
         // Monotonic stable wick bounds: never shrinks or flickers
-        const candleHigh = isLast ? Math.max(c.high, candleClose, c.open) : c.high;
-        const candleLow = isLast ? Math.min(c.low, candleClose, c.open) : c.low;
+        const candleHigh = isLast
+          ? (isOtcChart ? Math.max(c.high, c.open, c.close) : Math.max(c.high, candleClose, c.open))
+          : c.high;
+        const candleLow = isLast
+          ? (isOtcChart ? Math.min(c.low, c.open, c.close) : Math.min(c.low, candleClose, c.open))
+          : c.low;
 
         const openY = priceToY(c.open);
         const closeY = priceToY(candleClose);
@@ -4270,7 +4243,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         const dirSymbol = isUp ? '↑' : '↓';
 
         // Remaining seconds countdown
-        const nowMs = Date.now();
+        const nowMs = customMarketEngine.getSyncedNow();
         const remSec = trd.expiryTimestamp 
           ? Math.max(0, Math.ceil((trd.expiryTimestamp - nowMs) / 1000))
           : (trd.remainingSeconds || 0);
@@ -4902,7 +4875,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
         return updated;
       });
 
-      const now = Date.now();
+      const now = customMarketEngine.getSyncedNow();
       const quotexTiming = calculateQuotexTiming(timeframe, otcExpiryDuration, 'candle_sync', now);
       const expDurationSec = quotexTiming.tradeDurationSec;
       const expiryTimeMs = quotexTiming.targetExpiryMs;
@@ -4933,11 +4906,23 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
 
       setActiveTrades(prev => [newTrade, ...prev]);
       saveTradeToFirestore(newTrade, userUid, userEmail);
-      safeFetch('/api/users/trades', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newTrade)
-      }, 3000).catch(() => {});
+      const syncTradeToServer = async (attempt: number = 0) => {
+        try {
+          const res = await safeFetch('/api/users/trades', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(newTrade)
+          }, 3000);
+          if ((!res || !res.ok) && attempt < 2) {
+            setTimeout(() => syncTradeToServer(attempt + 1), 400);
+          }
+        } catch (_) {
+          if (attempt < 2) {
+            setTimeout(() => syncTradeToServer(attempt + 1), 400);
+          }
+        }
+      };
+      syncTradeToServer(0);
       showNotification(`Binary Option Placed! ${type} ${activeMarket.symbol} ($${invAmount} USD) | Closes at ${quotexTiming.targetExpiryFormatted} (${quotexTiming.isRollover ? 'Next Candle' : 'Current Candle'})`, 'success');
 
       if (onTradeExecuted) onTradeExecuted(newTrade);
@@ -6321,7 +6306,7 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
             <div className="space-y-1">
               {/* OTC Row 1: Expiry Duration, Quotex Candle Clock & Investment Steppers */}
               {(() => {
-                const currentQuotexTiming = calculateQuotexTiming(timeframe, otcExpiryDuration, 'candle_sync', Date.now());
+                const currentQuotexTiming = calculateQuotexTiming(timeframe, otcExpiryDuration, 'candle_sync', customMarketEngine.getSyncedNow());
                 return (
                   <div className="flex flex-wrap items-center justify-between gap-1 sm:gap-1.5">
                     {/* Quotex Expiry & Clock Display */}
@@ -8590,8 +8575,16 @@ export const TradingTerminalView: React.FC<TradingTerminalViewProps> = ({
                         key={`mkt-sel-${m.id || 'm'}-${idx}`}
                         type="button"
                         onClick={() => {
+                          smoothPriceRangeRef.current = null;
                           const warm = customMarketEngine.getCandles(m.symbol, timeframe as TimeframeId);
-                          if (warm && warm.length > 0) {
+                          const tfMsModal = getTimeframeSeconds(timeframe) * 1000;
+                          const nowModal = customMarketEngine.getSyncedNow();
+                          const isModalOtc = m.category === 'otc' || !m.isRealMarket;
+                          const isWarmModalFresh = warm && warm.length > 0 && (
+                            !isModalOtc ||
+                            warm[warm.length - 1].time >= Math.floor(nowModal / tfMsModal) * tfMsModal - tfMsModal
+                          );
+                          if (isWarmModalFresh) {
                             setCandles(warm);
                             const lastP = warm[warm.length - 1].close;
                             setCurrentTickPrice(lastP);

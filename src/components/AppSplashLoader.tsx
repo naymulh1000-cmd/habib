@@ -51,7 +51,7 @@ export const AppSplashLoader: React.FC<AppSplashLoaderProps> = ({ isFadingOut = 
         <div className="relative z-10 w-24 h-24 sm:w-28 sm:h-28 rounded-3xl bg-gradient-to-br from-[#1E293B] via-[#0F172A] to-[#0A0F1D] border border-blue-500/30 flex items-center justify-center p-4 shadow-2xl shadow-blue-500/30">
           <img
             src={logoUrl}
-            alt="Forex Trade"
+            alt="FXBY24"
             className="w-full h-full object-contain drop-shadow-[0_0_12px_rgba(59,130,246,0.6)]"
             referrerPolicy="no-referrer"
             onError={(e) => {

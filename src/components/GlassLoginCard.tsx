@@ -231,7 +231,7 @@ export const GlassLoginCard: React.FC<GlassLoginCardProps> = ({
           addToast({
             type: 'success',
             title: 'Login Successful',
-            message: 'Welcome back to Forex Trade Pro Terminal.'
+            message: 'Welcome back to FXBY24 Terminal.'
           });
         }
 
@@ -478,7 +478,7 @@ export const GlassLoginCard: React.FC<GlassLoginCardProps> = ({
       addToast({
         type: 'success',
         title: 'Demo Session Activated',
-        message: 'Welcome to Forex Trade Pro Demo Terminal with $10,000.00 virtual trading funds!'
+        message: 'Welcome to FXBY24 Demo Terminal with $10,000.00 virtual trading funds!'
       });
       setSuccessMsg('Demo Trader Session active! Redirecting to market workspace...');
       setTimeout(() => {

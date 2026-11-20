@@ -92,9 +92,34 @@ class CustomMarketEngineService {
   private activeViewedSymbol: string = 'EUR/USD OTC';
   private activeViewedTimeframe: TimeframeId = 'M1';
   private exchangeAnchorPrices: Map<string, number> = new Map();
+  private lastServerOtcTickAt: number = 0;
+  private lastServerOtcTickSeq: number = 0;
+  private isOtcSseConnected: boolean = false;
+  private hasInitialClockSync: boolean = false;
+  private isResyncingOtcHistory: boolean = false;
+  private lastOtcResyncAt: number = 0;
 
   constructor() {
     // Heavy intervals and tick loops are deferred until init() or active subscription
+  }
+
+  public syncServerTimeFromServer(serverTime?: number, seq?: number) {
+    if (typeof serverTime === 'number' && Number.isFinite(serverTime) && serverTime > 1000000000000) {
+      const nextOffset = Math.round(serverTime - Date.now());
+      if (!this.hasInitialClockSync || Math.abs(nextOffset - this.serverTimeOffset) > 120) {
+        this.serverTimeOffset = nextOffset;
+        this.hasInitialClockSync = true;
+        try {
+          if (typeof sessionStorage !== 'undefined') {
+            sessionStorage.setItem('broker_server_time_offset', String(this.serverTimeOffset));
+          }
+        } catch (_) {}
+      }
+    }
+    if (typeof seq === 'number' && seq > 0 && seq < 5 && this.lastServerOtcTickSeq > 20) {
+      // Server restarted cleanly
+      this.lastServerOtcTickSeq = 0;
+    }
   }
 
   public setActiveViewedSymbol(symbol: string) {
@@ -129,35 +154,29 @@ class CustomMarketEngineService {
     if (this.isInitialized) return;
     this.isInitialized = true;
 
-    // Synchronize clock with authoritative server engine (safe timeout & circuit breaker)
-    let serverClockFails = 0;
+    // Synchronize clock with authoritative server engine (never permanently disable on mobile network slowdowns)
     const syncServerClock = async () => {
-      if (serverClockFails >= 2) return;
       try {
         if (typeof window !== 'undefined') {
           const reqStart = Date.now();
-          const data = await safeFetchJson('/api/server-time', {}, 600);
+          const data = await safeFetchJson('/api/server-time', {}, 3000);
           if (data && typeof data.time === 'number') {
-            serverClockFails = 0;
             const reqEnd = Date.now();
             const roundTrip = (reqEnd - reqStart) / 2;
             this.serverTimeOffset = Math.round(data.time - (reqStart + roundTrip));
+            this.hasInitialClockSync = true;
             try {
               sessionStorage.setItem('broker_server_time_offset', String(this.serverTimeOffset));
             } catch (_) {}
-          } else {
-            serverClockFails++;
           }
         }
-      } catch (_) {
-        serverClockFails++;
-      }
+      } catch (_) {}
     };
 
     syncServerClock();
-    setInterval(syncServerClock, 30000);
+    setInterval(syncServerClock, 15000);
 
-    // Synchronize live OTC order exposure & house risk management with central server (resilient auto-recovery)
+    // Synchronize live OTC order exposure & house risk management with central server (for HUD / Admin view)
     let isOtcExposureInFlight = false;
     let nextExposureRetryTime = 0;
     const syncOtcExposure = async () => {
@@ -188,23 +207,28 @@ class CustomMarketEngineService {
     syncOtcExposure();
     setInterval(syncOtcExposure, 2000);
 
-    // Authoritative Live Tick & Active Candle Synchronization from Central Server (1-second tick cadence)
-    // Guarantees 100-200 phones, tablets, and desktop devices show the EXACT same ticks and candle shapes
+    // Authoritative HTTP fallback ONLY when SSE stream is unavailable/disconnected (prevents SSE vs poll races)
     let isOtcLiveTicksInFlight = false;
-    let nextLiveTicksRetryTime = 0;
-    const syncOtcLiveTicks = async () => {
+    let lastLiveTicksFetchAt = 0;
+    const syncOtcLiveTicks = async (forceNow: boolean = false) => {
       const now = Date.now();
-      if (isOtcLiveTicksInFlight || now < nextLiveTicksRetryTime) return;
+      if (!forceNow && this.isOtcSseConnected && (now - this.lastServerOtcTickAt < 2000)) {
+        return;
+      }
+      if (isOtcLiveTicksInFlight || (!forceNow && now - lastLiveTicksFetchAt < 380)) return;
       try {
         if (typeof window !== 'undefined') {
-          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+          if (!forceNow && typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
           isOtcLiveTicksInFlight = true;
+          lastLiveTicksFetchAt = now;
           const data = await safeFetchJson('/api/otc/live-ticks', {}, 3000);
           if (data && data.success && data.ticks) {
-            nextLiveTicksRetryTime = 0;
-            if (typeof data.serverTime === 'number') {
-              const localNow = Date.now();
-              this.serverTimeOffset = Math.round(data.serverTime - localNow);
+            this.syncServerTimeFromServer(data.serverTime, data.seq);
+            if (typeof data.seq === 'number' && data.seq < this.lastServerOtcTickSeq) {
+              return;
+            }
+            if (typeof data.seq === 'number') {
+              this.lastServerOtcTickSeq = data.seq;
             }
             if (typeof data.exposureControlEnabled === 'boolean' && typeof window !== 'undefined') {
               window.dispatchEvent(new CustomEvent('otc_control_config_updated', {
@@ -212,71 +236,85 @@ class CustomMarketEngineService {
               }));
             }
             Object.keys(data.ticks).forEach(cleanSym => {
-              const tick = data.ticks[cleanSym];
-              if (!tick) return;
-              const market = this.getMarket(tick.symbol || cleanSym);
-              const isOtc = market && (market.category === 'otc' || Boolean(market.symbol && market.symbol.toUpperCase().includes('OTC')) || market.isRealMarket === false);
-              if (market && isOtc) {
-                if (tick.activeCandle) {
-                  this.applyAuthenticExchangeCandle(market, 'M1', tick.activeCandle);
-                }
-                if (typeof tick.price === 'number') {
-                  this.currentPrices.set(market.symbol, tick.price);
-                }
-              }
+              this.applyServerOtcTick(data.ticks[cleanSym], cleanSym);
             });
-          } else {
-            nextLiveTicksRetryTime = now + 1500;
           }
         }
       } catch (_) {
-        nextLiveTicksRetryTime = now + 1500;
       } finally {
         isOtcLiveTicksInFlight = false;
       }
     };
 
-    syncOtcLiveTicks();
-    setInterval(syncOtcLiveTicks, 1000);
+    syncOtcLiveTicks(true);
+    setInterval(() => syncOtcLiveTicks(false), 400);
 
-    // Real-Time High-Frequency SSE Sub-Tick Stream (<100ms latency across 50,000+ devices globally)
-    // Synchronizes every micro-tick, high, low, close directly from the central server to all devices!
+    // Real-Time High-Frequency SSE Sub-Tick Stream (<100ms latency across all devices globally)
+    // Single authoritative OTC tick & candle feed eliminating cross-device chart divergence and flicker
     if (typeof window !== 'undefined' && typeof EventSource !== 'undefined') {
       try {
         let sseReconnectTimer: any = null;
+        let activeEs: EventSource | null = null;
         const connectOtcStream = () => {
           if (sseReconnectTimer) clearTimeout(sseReconnectTimer);
+          if (activeEs) {
+            try { activeEs.close(); } catch (_) {}
+          }
           const es = new EventSource('/api/otc/stream');
+          activeEs = es;
+          es.onopen = () => {
+            this.isOtcSseConnected = true;
+            syncServerClock();
+          };
           es.onmessage = (event) => {
+            this.isOtcSseConnected = true;
             try {
               const payload = JSON.parse(event.data);
-              if (payload && payload.ticks) {
-                if (typeof payload.serverTime === 'number') {
-                  this.serverTimeOffset = Math.round(payload.serverTime - Date.now());
-                }
+              if (!payload) return;
+              if (typeof payload.serverTime === 'number' || typeof payload.seq === 'number') {
+                this.syncServerTimeFromServer(payload.serverTime, payload.seq);
+              }
+              if (payload.type !== 'SNAPSHOT' && typeof payload.seq === 'number' && payload.seq < this.lastServerOtcTickSeq) {
+                return;
+              }
+              if (typeof payload.seq === 'number') {
+                this.lastServerOtcTickSeq = payload.seq;
+              }
+              if (typeof payload.exposureControlEnabled === 'boolean' && typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('otc_control_config_updated', {
+                  detail: { exposureControlEnabled: payload.exposureControlEnabled }
+                }));
+              }
+              if (payload.ticks) {
                 Object.keys(payload.ticks).forEach(cleanSym => {
-                  const tick = payload.ticks[cleanSym];
-                  if (!tick) return;
-                  const market = this.getMarket(tick.symbol || cleanSym);
-                  const isOtc = market && (market.category === 'otc' || Boolean(market.symbol && market.symbol.toUpperCase().includes('OTC')) || market.isRealMarket === false);
-                  if (market && isOtc) {
-                    if (tick.activeCandle) {
-                      this.applyAuthenticExchangeCandle(market, 'M1', tick.activeCandle);
-                    }
-                    if (typeof tick.price === 'number') {
-                      this.currentPrices.set(market.symbol, tick.price);
-                    }
-                  }
+                  this.applyServerOtcTick(payload.ticks[cleanSym], cleanSym);
                 });
+              }
+              if (payload.type === 'SNAPSHOT') {
+                this.resyncViewedOtcHistory(true);
               }
             } catch (_) {}
           };
           es.onerror = () => {
-            es.close();
-            sseReconnectTimer = setTimeout(connectOtcStream, 3500);
+            this.isOtcSseConnected = false;
+            try { es.close(); } catch (_) {}
+            sseReconnectTimer = setTimeout(connectOtcStream, 2000);
           };
         };
         connectOtcStream();
+
+        // Resync immediately when phone wakes from background/sleep or reconnects to internet
+        const handleResume = () => {
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+          syncServerClock();
+          syncOtcLiveTicks(true);
+          this.resyncViewedOtcHistory(true);
+          if (!activeEs || activeEs.readyState === EventSource.CLOSED) {
+            connectOtcStream();
+          }
+        };
+        document.addEventListener('visibilitychange', handleResume);
+        window.addEventListener('online', handleResume);
       } catch (_) {}
     }
 
@@ -291,7 +329,8 @@ class CustomMarketEngineService {
     subscribeToMarketConfig((updatedMarkets) => {
       updatedMarkets.forEach(m => {
         const existing = this.markets.get(m.symbol);
-        const configChanged = existing && (
+        const isOtc = m.category === 'otc' || Boolean(m.symbol && m.symbol.toUpperCase().includes('OTC')) || m.isRealMarket === false;
+        const configChanged = existing && !isOtc && (
           existing.trendBias !== m.trendBias ||
           existing.controlMode !== m.controlMode ||
           existing.targetPrice !== m.targetPrice ||
@@ -304,7 +343,7 @@ class CustomMarketEngineService {
           isRunning: m.isRunning !== undefined ? m.isRunning : (existing?.isRunning ?? true)
         });
 
-        // If admin controls changed, flush bucket cache so all timeframes re-anchor instantly
+        // Only flush non-OTC local buckets; OTC buckets strictly track central server stream
         if (configChanged) {
           SUPPORTED_TIMEFRAMES.forEach(tf => {
             this.candleBuckets.delete(`${m.symbol}_${tf.id}`);
@@ -438,26 +477,26 @@ class CustomMarketEngineService {
       if (listeners.size > 0) activeTickerSymbols.add(sym);
     });
 
-    // 2. High-Frequency Tick & Candle processing: ONLY for active listening markets (Reduces CPU by 99%!)
+    // 2. High-Frequency Tick & Candle processing:
+    // OTC markets are 100% server-authoritative — NEVER run divergent client fallback math for OTC!
     activeCandleSymbols.forEach(symbol => {
       const market = this.getMarket(symbol);
       if (!market || !market.isActive || market.isRunning === false) return;
 
       const isOtc = market && (market.category === 'otc' || Boolean(market.symbol && market.symbol.toUpperCase().includes('OTC')) || market.isRealMarket === false);
-      const speedMs = isOtc ? 50 : (market.speed || market.updateSpeedMs || 100);
+      if (isOtc) {
+        return; // Strictly driven by central server stream / live-ticks
+      }
+
+      const speedMs = market.speed || market.updateSpeedMs || 100;
       if (speedMs > 50 && this.tickCounter % Math.max(1, Math.floor(speedMs / 50)) !== 0) {
         return;
       }
 
-      let price: number;
-      if (market.isRealMarket || market.category !== 'otc') {
-        price = this.calculateRealMarketDynamicTick(market, now);
-      } else {
-        price = this.calculateNextPrice(market, now);
-      }
+      const price = this.calculateRealMarketDynamicTick(market, now);
       this.currentPrices.set(market.symbol, price);
 
-      // Update Sub-minute and M1 directly
+      // Update Sub-minute and M1 directly for real markets
       this.updateCandleBucket(market, 'M1', 60, price, now);
       ['S1', 'S5', 'S15', 'S30'].forEach((tfId) => {
         const tfObj = SUPPORTED_TIMEFRAMES.find(t => t.id === tfId);
@@ -466,7 +505,6 @@ class CustomMarketEngineService {
         }
       });
 
-      // Also directly update active timeframe if higher than M1 (M5, M15, M30, H1, etc.)
       if (this.activeViewedTimeframe && !['M1', 'S1', 'S5', 'S15', 'S30'].includes(this.activeViewedTimeframe)) {
         const tfObj = SUPPORTED_TIMEFRAMES.find(t => t.id === this.activeViewedTimeframe);
         if (tfObj) {
@@ -474,7 +512,6 @@ class CustomMarketEngineService {
         }
       }
 
-      // Aggregate higher timeframes only if M1 has candles and that timeframe has active listeners
       const m1Bucket = this.candleBuckets.get(`${market.symbol}_M1`) || [];
       if (m1Bucket.length > 0) {
         ['M5', 'M15', 'M30', 'H1', 'H4', 'D1'].forEach((tfId) => {
@@ -490,26 +527,97 @@ class CustomMarketEngineService {
         });
       }
 
-      // Notify ticker listeners
       this.notifyTicker(market, price, now);
     });
 
-    // 3. For other subscribed ticker markets (e.g. watchlist open), update price at lower frequency (every 500ms)
+    // 3. For other subscribed ticker markets (e.g. watchlist open), update ONLY non-OTC markets locally
     if (this.tickCounter % 5 === 0) {
       activeTickerSymbols.forEach(symbol => {
-        if (activeCandleSymbols.has(symbol)) return; // Already updated above
+        if (activeCandleSymbols.has(symbol)) return;
         const market = this.getMarket(symbol);
         if (!market || !market.isActive || market.isRunning === false) return;
 
-        let price: number;
-        if (market.isRealMarket || market.category !== 'otc') {
-          price = this.calculateRealMarketDynamicTick(market, now);
-        } else {
-          price = this.calculateNextPrice(market, now);
+        const isOtc = market && (market.category === 'otc' || Boolean(market.symbol && market.symbol.toUpperCase().includes('OTC')) || market.isRealMarket === false);
+        if (isOtc) {
+          return; // OTC ticker updates strictly from central server ticks
         }
+
+        const price = this.calculateRealMarketDynamicTick(market, now);
         this.currentPrices.set(market.symbol, price);
         this.notifyTicker(market, price, now);
       });
+    }
+  }
+
+  public resyncViewedOtcHistory(force: boolean = false) {
+    if (typeof window === 'undefined') return;
+    const symbol = this.activeViewedSymbol;
+    const timeframe = this.activeViewedTimeframe;
+    if (!symbol || !timeframe) return;
+    const market = this.getMarket(symbol);
+    const isOtc = market && (market.category === 'otc' || Boolean(market.symbol && market.symbol.toUpperCase().includes('OTC')) || market.isRealMarket === false);
+    if (!isOtc) return;
+
+    const now = Date.now();
+    if (!force && (this.isResyncingOtcHistory || now - this.lastOtcResyncAt < 1800)) return;
+    if (this.isResyncingOtcHistory) return;
+
+    this.isResyncingOtcHistory = true;
+    this.lastOtcResyncAt = now;
+    const bucketKey = `${market.symbol}_${timeframe}`;
+
+    safeFetchJson(
+      `/api/otc-candles/${encodeURIComponent(market.symbol)}/${encodeURIComponent(timeframe)}?count=600`,
+      {},
+      3500
+    )
+      .then((data: any) => {
+        if (data && data.success && Array.isArray(data.candles) && data.candles.length > 0) {
+          this.syncServerTimeFromServer(data.serverTime, data.seq);
+          this.seedCandles(market.symbol, timeframe, data.candles);
+          const seeded = this.candleBuckets.get(bucketKey) || data.candles;
+          this.notifyCandleSubscribers(bucketKey, seeded);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        this.isResyncingOtcHistory = false;
+      });
+  }
+
+  private applyServerOtcTick(tick: any, cleanSym: string) {
+    if (!tick) return;
+    const market = this.getMarket(tick.symbol || cleanSym);
+    const isOtc = market && (market.category === 'otc' || Boolean(market.symbol && market.symbol.toUpperCase().includes('OTC')) || market.isRealMarket === false);
+    if (!market || !isOtc) return;
+
+    this.lastServerOtcTickAt = Date.now();
+    const isViewedOrListening =
+      this.activeViewedSymbol === market.symbol ||
+      Array.from(this.candleListeners.keys()).some(k => k.startsWith(`${market.symbol}_`) && (this.candleListeners.get(k)?.size || 0) > 0);
+
+    if (typeof tick.price === 'number') {
+      this.currentPrices.set(market.symbol, tick.price);
+    }
+
+    if (isViewedOrListening) {
+      if (tick.activeCandle) {
+        this.applyAuthenticExchangeCandle(market, 'M1', tick.activeCandle);
+      }
+      if (tick.tfCandles && typeof tick.tfCandles === 'object') {
+        (['S1', 'S5', 'S15', 'S30'] as TimeframeId[]).forEach((tfId) => {
+          const subCandle = tick.tfCandles[tfId];
+          const subKey = `${market.symbol}_${tfId}`;
+          const hasSubListener = (this.candleListeners.get(subKey)?.size || 0) > 0 || this.activeViewedTimeframe === tfId;
+          if (subCandle && (hasSubListener || this.candleBuckets.has(subKey))) {
+            this.applyAuthenticExchangeCandle(market, tfId, subCandle);
+          }
+        });
+      }
+    }
+
+    if (typeof tick.price === 'number') {
+      this.notifyTicker(market, tick.price, tick.time || this.getSyncedNow());
     }
   }
 
@@ -530,12 +638,7 @@ private updateAggregatedTimeframeBucket(
 
   let bucket = this.candleBuckets.get(bucketKey);
   if (!bucket || bucket.length === 0) {
-    if (market && !market.isRealMarket && market.category === 'otc') {
-      bucket = this.generateHistoricalCandles(market, timeframe, 150, currentBucketTime);
-      this.candleBuckets.set(bucketKey, bucket);
-    } else {
-      return;
-    }
+    return;
   }
 
   const lastIdx = bucket.length - 1;
@@ -545,6 +648,13 @@ private updateAggregatedTimeframeBucket(
   const currentWindowM1 = m1Candles.filter(c => c.time >= currentBucketTime && c.time < currentBucketTime + timeStepMs);
 
   if (lastCandle.time < currentBucketTime) {
+    if (currentBucketTime - lastCandle.time > timeStepMs) {
+      const isOtc = market && (market.category === 'otc' || Boolean(market.symbol && market.symbol.toUpperCase().includes('OTC')) || market.isRealMarket === false);
+      if (isOtc) {
+        this.resyncViewedOtcHistory(false);
+        return;
+      }
+    }
     // Transition to new higher-TF bucket: strict 0-gap (open = previous close)
     const rollingOpen = lastCandle.close;
     const newCandle: Candlestick = {
@@ -560,11 +670,8 @@ private updateAggregatedTimeframeBucket(
     if (bucket.length > 2500) {
       bucket.splice(0, bucket.length - 2500);
     }
-    if (!market.isRealMarket && market.category === 'otc') {
-      this.pendingFirestoreWrites.set(`${bucketKey}_${newCandle.time}`, newCandle);
-    }
   } else {
-    // Update active in-progress higher-TF candle from current window M1 candles
+    // Update active in-progress higher-TF candle strictly preserving its open and M1 highs/lows
     if (currentWindowM1.length > 0) {
       let high = lastCandle.open;
       let low = lastCandle.open;
@@ -579,23 +686,18 @@ private updateAggregatedTimeframeBucket(
       lastCandle.close = currentPrice;
       lastCandle.volume = totalVol;
     } else {
-      lastCandle.high = Math.max(lastCandle.high, currentPrice);
-      lastCandle.low = Math.min(lastCandle.low, currentPrice);
+      lastCandle.high = Math.max(lastCandle.high, lastCandle.open, currentPrice);
+      lastCandle.low = Math.min(lastCandle.low, lastCandle.open, currentPrice);
       lastCandle.close = currentPrice;
     }
     bucket[lastIdx] = lastCandle;
-
-    if (!market.isRealMarket && market.category === 'otc' && this.tickCounter % 20 === 0) {
-      this.pendingFirestoreWrites.set(`${bucketKey}_${lastCandle.time}`, lastCandle);
-    }
   }
 
   this.notifyCandleSubscribers(bucketKey, bucket);
 }
 
 /**
- * Applies 100% authentic exchange candle directly from TradingView Master Feed or Binance
- * Eliminates client drift and ensures identical candle across 50,000+ users
+ * Applies 100% authentic exchange / server OTC candle verbatim without client drift
  */
 private applyAuthenticExchangeCandle(
   market: MarketPairConfig,
@@ -603,45 +705,72 @@ private applyAuthenticExchangeCandle(
   incomingCandle: Candlestick
 ) {
   const bucketKey = `${market.symbol}_${timeframe}`;
+  const isOtc = market && (market.category === 'otc' || Boolean(market.symbol && market.symbol.toUpperCase().includes('OTC')) || market.isRealMarket === false);
+  const tfSecs = getTimeframeSeconds(timeframe);
+  const timeStepMs = tfSecs * 1000;
   let bucket = this.candleBuckets.get(bucketKey);
+
   if (!bucket || bucket.length === 0) {
-    bucket = [incomingCandle];
+    bucket = [{ ...incomingCandle }];
     this.candleBuckets.set(bucketKey, bucket);
   } else {
     const lastIdx = bucket.length - 1;
     const last = bucket[lastIdx];
 
     if (last.time === incomingCandle.time) {
-      const prevCandle = lastIdx > 0 ? bucket[lastIdx - 1] : undefined;
-      const establishedOpen = prevCandle ? prevCandle.close : (last.open || incomingCandle.open);
-      const isOtc = market && (market.category === 'otc' || Boolean(market.symbol && market.symbol.toUpperCase().includes('OTC')) || market.isRealMarket === false);
-      const rawHigh = isOtc
-        ? Math.max(establishedOpen, incomingCandle.high, incomingCandle.close)
-        : Math.max(establishedOpen, last.high ?? incomingCandle.high, incomingCandle.high, incomingCandle.close);
-      const rawLow = isOtc
-        ? Math.min(establishedOpen, incomingCandle.low, incomingCandle.close)
-        : Math.min(establishedOpen, last.low ?? incomingCandle.low, incomingCandle.low, incomingCandle.close);
+      if (isOtc) {
+        // Strictly trust server active candle OHLC verbatim — prevents phantom wicks or stale local highs/lows from sticking!
+        bucket[lastIdx] = {
+          time: incomingCandle.time,
+          timestamp: incomingCandle.timestamp || incomingCandle.time,
+          open: incomingCandle.open,
+          high: Math.max(incomingCandle.high, incomingCandle.open, incomingCandle.close),
+          low: Math.min(incomingCandle.low, incomingCandle.open, incomingCandle.close),
+          close: incomingCandle.close,
+          volume: incomingCandle.volume ?? last.volume ?? 100
+        };
+      } else {
+        const prevCandle = lastIdx > 0 ? bucket[lastIdx - 1] : undefined;
+        const establishedOpen = prevCandle ? prevCandle.close : (last.open || incomingCandle.open);
+        const rawHigh = Math.max(establishedOpen, last.high ?? incomingCandle.high, incomingCandle.high, incomingCandle.close);
+        const rawLow = Math.min(establishedOpen, last.low ?? incomingCandle.low, incomingCandle.low, incomingCandle.close);
 
-      bucket[lastIdx] = {
-        ...incomingCandle,
-        open: establishedOpen,
-        high: Number(rawHigh.toFixed(market.precision ?? 5)),
-        low: Number(rawLow.toFixed(market.precision ?? 5)),
-        close: incomingCandle.close
-      };
+        bucket[lastIdx] = {
+          ...incomingCandle,
+          open: establishedOpen,
+          high: Number(rawHigh.toFixed(market.precision ?? 5)),
+          low: Number(rawLow.toFixed(market.precision ?? 5)),
+          close: incomingCandle.close
+        };
+      }
     } else if (incomingCandle.time > last.time) {
-      // Finalize last candle's close as the strictly identical open for incoming candle (0 gap)
-      const cleanOpen = last.close;
-      bucket.push({
-        ...incomingCandle,
-        open: cleanOpen,
-        high: Math.max(cleanOpen, incomingCandle.high, incomingCandle.close),
-        low: Math.min(cleanOpen, incomingCandle.low, incomingCandle.close),
-      });
+      if (isOtc) {
+        // If one or more candles were skipped while phone slept/backgrounded, fetch full gapless history from server
+        if (incomingCandle.time - last.time > timeStepMs) {
+          this.resyncViewedOtcHistory(false);
+        }
+        bucket.push({
+          time: incomingCandle.time,
+          timestamp: incomingCandle.timestamp || incomingCandle.time,
+          open: incomingCandle.open,
+          high: Math.max(incomingCandle.high, incomingCandle.open, incomingCandle.close),
+          low: Math.min(incomingCandle.low, incomingCandle.open, incomingCandle.close),
+          close: incomingCandle.close,
+          volume: incomingCandle.volume ?? 100
+        });
+      } else {
+        const cleanOpen = last.close;
+        bucket.push({
+          ...incomingCandle,
+          open: cleanOpen,
+          high: Math.max(cleanOpen, incomingCandle.high, incomingCandle.close),
+          low: Math.min(cleanOpen, incomingCandle.low, incomingCandle.close),
+        });
+      }
       if (bucket.length > 2500) {
         bucket.splice(0, bucket.length - 2500);
       }
-    } else {
+    } else if (!isOtc) {
       const existingIdx = bucket.findIndex(c => c.time === incomingCandle.time);
       if (existingIdx >= 0) {
         const prevCandle = existingIdx > 0 ? bucket[existingIdx - 1] : undefined;
@@ -658,18 +787,23 @@ private applyAuthenticExchangeCandle(
 
   this.currentPrices.set(market.symbol, incomingCandle.close);
 
-  // Aggregate higher timeframes for M1 updates
+  // Aggregate actively viewed higher timeframes cleanly from authoritative M1
   if (timeframe === 'M1') {
     const now = this.getSyncedNow();
     ['M5', 'M15', 'M30', 'H1', 'H4', 'D1'].forEach((tfId) => {
+      const tfBucketKey = `${market.symbol}_${tfId}`;
+      const hasListeners = (this.candleListeners.get(tfBucketKey)?.size || 0) > 0 || this.activeViewedTimeframe === tfId;
+      if (!hasListeners) return;
       const tfObj = SUPPORTED_TIMEFRAMES.find(t => t.id === tfId);
-      if (tfObj && bucket.length > 0) {
+      if (tfObj && bucket && bucket.length > 0) {
         this.updateAggregatedTimeframeBucket(market, tfObj.id, tfObj.seconds, bucket, incomingCandle.close, now);
       }
     });
   }
 
-  this.notifyCandleSubscribers(bucketKey, bucket);
+  if (!(isOtc && bucket.length <= 1)) {
+    this.notifyCandleSubscribers(bucketKey, bucket);
+  }
   this.notifyTicker(market, incomingCandle.close, incomingCandle.time);
 }
 
@@ -1022,13 +1156,23 @@ private applyAuthenticExchangeCandle(
     const bucketKey = `${symbol}_${timeframe}`;
     let bucket = this.candleBuckets.get(bucketKey);
     const market = this.getMarket(symbol);
-    if (!bucket || bucket.length === 0) {
-      if (market && !market.isRealMarket && market.category === 'otc') {
-        bucket = this.generateHistoricalCandles(market, timeframe, 150);
-        this.candleBuckets.set(bucketKey, bucket);
+    const isOtc = market && (market.category === 'otc' || Boolean(market.symbol && market.symbol.toUpperCase().includes('OTC')) || market.isRealMarket === false);
+
+    if (isOtc) {
+      if (!bucket || bucket.length <= 1) return [];
+      const tfSecs = getTimeframeSeconds(timeframe);
+      const timeStepMs = tfSecs * 1000;
+      const now = this.getSyncedNow();
+      const currentBucketTime = Math.floor(now / timeStepMs) * timeStepMs;
+      const lastCandle = bucket[bucket.length - 1];
+      // Do not serve stale OTC buckets left over from before switching away
+      if (lastCandle.time < currentBucketTime - timeStepMs) {
+        return [];
       }
-    } else if (market && bucket.length > 0) {
-      // Ensure the latest candle is up-to-date with current time bucket
+      return bucket;
+    }
+
+    if (market && bucket && bucket.length > 0) {
       const tfSecs = getTimeframeSeconds(timeframe);
       const timeStepMs = tfSecs * 1000;
       const now = this.getSyncedNow();
@@ -1064,26 +1208,37 @@ private applyAuthenticExchangeCandle(
 
   public seedCandles(symbol: string, timeframe: TimeframeId, candles: Candlestick[]) {
     if (!candles || candles.length === 0) return;
-    const market = this.getMarket(symbol);
-    const base = market?.basePrice || 100;
 
-    // Filter corrupted outlier candles that drifted far away from base price or have abnormal spikes
-    const validCandles = candles.filter(c => {
-      if (!c || typeof c.close !== 'number' || typeof c.open !== 'number') return false;
-      if (market?.isRealMarket || market?.category !== 'otc') {
-        return c.close > 0 && c.open > 0;
-      }
-      const bodySize = Math.abs(c.close - c.open);
-      if (bodySize > Math.max(0.0035, base * 0.0035)) return false; // Reject abnormal giant bars
-      return Math.abs(c.close - base) / (base || 1) <= 0.018;
-    });
+    const validCandles = candles.filter(c =>
+      c &&
+      typeof c.time === 'number' &&
+      Number.isFinite(c.open) &&
+      Number.isFinite(c.high) &&
+      Number.isFinite(c.low) &&
+      Number.isFinite(c.close) &&
+      c.close > 0 &&
+      c.open > 0
+    );
 
     if (validCandles.length === 0) return;
 
-    const bucketKey = `${symbol}_${timeframe}`;
-    this.candleBuckets.set(bucketKey, validCandles);
+    const market = this.getMarket(symbol);
+    const isOtc = market && (market.category === 'otc' || Boolean(market.symbol && market.symbol.toUpperCase().includes('OTC')) || market.isRealMarket === false);
 
-    const lastCandle = validCandles[validCandles.length - 1];
+    // For OTC, preserve authoritative server OHLC verbatim without mutating highs/lows
+    const cleanSeeded: Candlestick[] = validCandles.map(c => ({ ...c }));
+    if (!isOtc) {
+      for (let i = 1; i < cleanSeeded.length; i++) {
+        cleanSeeded[i].open = cleanSeeded[i - 1].close;
+        cleanSeeded[i].high = Math.max(cleanSeeded[i].high, cleanSeeded[i].open, cleanSeeded[i].close);
+        cleanSeeded[i].low = Math.min(cleanSeeded[i].low, cleanSeeded[i].open, cleanSeeded[i].close);
+      }
+    }
+
+    const bucketKey = `${symbol}_${timeframe}`;
+    this.candleBuckets.set(bucketKey, cleanSeeded);
+
+    const lastCandle = cleanSeeded[cleanSeeded.length - 1];
     if (lastCandle && lastCandle.close) {
       this.currentPrices.set(symbol, lastCandle.close);
     }
@@ -1132,29 +1287,26 @@ private applyAuthenticExchangeCandle(
     if (symbol) {
       this.activeViewedSymbol = symbol;
     }
+    if (timeframe) {
+      this.activeViewedTimeframe = timeframe;
+    }
     const bucketKey = `${symbol}_${timeframe}`;
     if (!this.candleListeners.has(bucketKey)) {
       this.candleListeners.set(bucketKey, new Set());
     }
     this.candleListeners.get(bucketKey)!.add(callback);
 
-    // Emit initial cached/computed candles immediately for 0-latency UI
+    // Emit initial warm candles immediately if fresh (> 5 candles)
     const current = this.getCandles(symbol, timeframe);
-    callback(current);
+    if (current && current.length > 5) {
+      callback(current);
+    }
 
-    // Asynchronously synchronize authoritative closed candles from central server (guarantees 100% identical history)
+    // Also resync OTC if warm cache is empty or behind current bucket (deduplicated)
     const market = this.getMarket(symbol);
     const isOtc = market && (market.category === 'otc' || Boolean(market.symbol && market.symbol.toUpperCase().includes('OTC')) || market.isRealMarket === false);
-    if (isOtc && typeof window !== 'undefined') {
-      safeFetchJson(`/api/market-candles/${encodeURIComponent(symbol)}/${timeframe}`, {}, 3000).then((data: any) => {
-        if (data && data.success && Array.isArray(data.candles) && data.candles.length > 0) {
-          const valid = data.candles.filter((c: any) => c && typeof c.time === 'number' && typeof c.close === 'number');
-          if (valid.length > 0) {
-            this.candleBuckets.set(bucketKey, valid);
-            this.notifyCandleSubscribers(bucketKey, valid);
-          }
-        }
-      }).catch(() => {});
+    if (isOtc && typeof window !== 'undefined' && (!current || current.length <= 5)) {
+      this.resyncViewedOtcHistory(false);
     }
 
     return () => {

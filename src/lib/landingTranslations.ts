@@ -185,7 +185,7 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
 
     dualBadge: 'Dual Asset Architecture',
     dualTitle: 'Understanding Forex & Binary Trading',
-    dualSubtitle: 'Forex Trade Pro unites two premier financial disciplines into a single high-speed execution ecosystem. Experience institutional liquidity alongside rapid fixed-time contracts.',
+    dualSubtitle: 'FXBY24 unites two premier financial disciplines into a single high-speed execution ecosystem. Experience institutional liquidity alongside rapid fixed-time contracts.',
     forexModeBadge: 'Short-Term Scalping Mode',
     forexModeTitle: 'Short-Term Scalping & Pip Trading (A to Z)',
     forexModeDesc: 'Master high-speed scalp trading by capturing fast micro-price movements across short timeframes (5 seconds to 1 minute). Scalpers exploit rapid liquidity shifts, entering and exiting positions within seconds to lock in 1 to 5 pips.',
@@ -218,8 +218,8 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
     faqTitle: 'Frequently Asked Questions',
     faqSubtitle: 'Clear answers regarding our 100% deposit bonus, withdrawal terms, $25 UID referral rewards, and security.',
 
-    footerDesc: 'Forex Trade Pro is an international multi-asset financial platform delivering cutting-edge execution across Forex spread trading and high-return Binary Options.',
-    footerRights: '© 2026 Forex Trade Pro. All rights reserved.',
+    footerDesc: 'FXBY24 is an international multi-asset financial platform delivering cutting-edge execution across Forex spread trading and high-return Binary Options.',
+    footerRights: '© 2026 FXBY24. All rights reserved.',
     footerWarning: 'High Risk Investment Warning: Trading Foreign Exchange (Forex) and Binary Options on margin carries a high level of risk and may not be suitable for all investors.'
   },
   bn: {
@@ -272,7 +272,7 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
 
     dualBadge: 'ডুয়েল অ্যাসেট আর্কিটেকচার',
     dualTitle: 'ফরেক্স এবং বাইনারি ট্রেডিং এর বিস্তারিত',
-    dualSubtitle: 'Forex Trade Pro ফরেক্স ও ফিক্সড-টাইম বাইনারি অপশনকে একটি দ্রুতগতির শক্তিশালী সিস্টেমে রূপান্তর করেছে।',
+    dualSubtitle: 'FXBY24 ফরেক্স ও ফিক্সড-টাইম বাইনারি অপশনকে একটি দ্রুতগতির শক্তিশালী সিস্টেমে রূপান্তর করেছে।',
     forexModeBadge: 'শর্ট-টার্ম স্ক্যাল্পিং মোড',
     forexModeTitle: 'শর্ট-টার্ম স্ক্যাল্পিং ও পিপ ট্রেডিং (A to Z)',
     forexModeDesc: '৫ সেকেন্ড থেকে ১ মিনিটের মধ্যে মাইক্রো-মুভমেন্ট ক্যাপচার করে দ্রুত প্রফিট লক করুন। আল্ট্রা-ফাস্ট স্পিডে ১ থেকে ৫ পিপস পর্যন্ত সহজে অর্জন সম্ভব।',
@@ -305,8 +305,8 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
     faqTitle: 'সচরাচর জিজ্ঞাসিত প্রশ্নাবলি (FAQ)',
     faqSubtitle: '১০০% বোনাস, উইথড্রয়াল শর্তাবলি, $২৫ UID রেফারেল এবং সিকিউরিটি সম্পর্কিত সমস্ত তথ্যাবলি।',
 
-    footerDesc: 'Forex Trade Pro হলো একটি আন্তর্জাতিক মাল্টি-অ্যাসেট ফিন্যান্সিয়াল প্ল্যাটফর্ম যা ফরেক্স স্প্রেড ট্রেডিং ও হাই-রিটার্ন বাইনারি অপশন সেবা প্রদান করে।',
-    footerRights: '© ২০২৬ Forex Trade Pro. সর্বস্বত্ব সংরক্ষিত।',
+    footerDesc: 'FXBY24 হলো একটি আন্তর্জাতিক মাল্টি-অ্যাসেট ফিন্যান্সিয়াল প্ল্যাটফর্ম যা ফরেক্স স্প্রেড ট্রেডিং ও হাই-রিটার্ন বাইনারি অপশন সেবা প্রদান করে।',
+    footerRights: '© ২০২৬ FXBY24. সর্বস্বত্ব সংরক্ষিত।',
     footerWarning: 'উচ্চ ঝুঁকির সতর্কতা: ফরেক্স এবং বাইনারি অপশন ট্রেডিংয়ে মূলধনের ঝুঁকি রয়েছে এবং এটি সকল বিনিয়োগকারীর জন্য উপযুক্ত নাও হতে পারে।'
   },
   hi: {
@@ -359,7 +359,7 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
 
     dualBadge: 'डुअल एसेट आर्किटेक्चर',
     dualTitle: 'फॉरेक्स और बाइनरी ट्रेडिंग को समझें',
-    dualSubtitle: 'Forex Trade Pro एक ही शक्तिशाली और सुरक्षित प्रणाली में दो प्रमुख वित्तीय साधनों को जोड़ता है।',
+    dualSubtitle: 'FXBY24 एक ही शक्तिशाली और सुरक्षित प्रणाली में दो प्रमुख वित्तीय साधनों को जोड़ता है।',
     forexModeBadge: 'शॉर्ट-टर्म स्कैल्पिंग मोड',
     forexModeTitle: 'शॉर्ट-टर्म स्कैल्पिंग और पिप ट्रेडिंग (A to Z)',
     forexModeDesc: '5 सेकंड से 1 मिनट के भीतर त्वरित मूल्य उतार-चढ़ाव को पकड़कर तेजी से लाभ अर्जित करें।',
@@ -392,8 +392,8 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
     faqTitle: 'अक्सर पूछे जाने वाले प्रश्न',
     faqSubtitle: '100% बोनस, निकासी शर्तों, $25 UID रेफरल और सुरक्षा के संबंध में स्पष्ट उत्तर।',
 
-    footerDesc: 'Forex Trade Pro एक अंतरराष्ट्रीय वित्तीय प्लेटफॉर्म है जो फॉरेक्स और उच्च रिटर्न बाइनरी ऑप्शंस प्रदान करता है।',
-    footerRights: '© 2026 Forex Trade Pro. सभी अधिकार सुरक्षित।',
+    footerDesc: 'FXBY24 एक अंतरराष्ट्रीय वित्तीय प्लेटफॉर्म है जो फॉरेक्स और उच्च रिटर्न बाइनरी ऑप्शंस प्रदान करता है।',
+    footerRights: '© 2026 FXBY24. सभी अधिकार सुरक्षित।',
     footerWarning: 'जोखिम चेतावनी: फॉरेक्स और बाइनरी ट्रेडिंग में वित्तीय जोखिम शामिल है और यह सभी निवेशकों के लिए उपयुक्त नहीं हो सकता।'
   },
   ur: {
@@ -446,7 +446,7 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
 
     dualBadge: 'ڈبل اثاثہ سسٹم',
     dualTitle: 'فاریکس اور بائنری ٹریڈنگ کی تفاصیل',
-    dualSubtitle: 'Forex Trade Pro جدید رفتار اور محفوظ ترین ٹریڈنگ ایک ہی جگہ فراہم کرتا ہے۔',
+    dualSubtitle: 'FXBY24 جدید رفتار اور محفوظ ترین ٹریڈنگ ایک ہی جگہ فراہم کرتا ہے۔',
     forexModeBadge: 'شارٹ ٹرم اسکیلپنگ موڈ',
     forexModeTitle: 'اسکیلپنگ اور پِپ ٹریڈنگ (A to Z)',
     forexModeDesc: '5 سیکنڈ سے 1 منٹ کے درمیان تیز رفتار قیمتوں کی نقل و حرکت سے فوری منافع کمائیں۔',
@@ -479,8 +479,8 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
     faqTitle: 'اکثر پوچھے گئے سوالات',
     faqSubtitle: '100% بونس، رقم نکلوانے، $25 ریفرل اور سیکیورٹی سے متعلق واضح جوابات۔',
 
-    footerDesc: 'Forex Trade Pro ایک بین الاقوامی ملٹی ایسٹ مالیاتی پلیٹ فارم ہے جو فاریکس اور بائنری آپشنز ٹریڈنگ فراہم کرتا ہے۔',
-    footerRights: '© 2026 Forex Trade Pro. تمام حقوق محفوظ ہیں۔',
+    footerDesc: 'FXBY24 ایک بین الاقوامی ملٹی ایسٹ مالیاتی پلیٹ فارم ہے جو فاریکس اور بائنری آپشنز ٹریڈنگ فراہم کرتا ہے۔',
+    footerRights: '© 2026 FXBY24. تمام حقوق محفوظ ہیں۔',
     footerWarning: 'وارننگ: فاریکس اور بائنری ٹریڈنگ میں مالی خطرہ شامل ہے اور یہ تمام سرمایہ کاروں کے لیے موزوں نہیں ہو سکتا۔'
   },
   de: {
@@ -533,7 +533,7 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
 
     dualBadge: 'Duale Asset-Architektur',
     dualTitle: 'Forex & Binary Trading verstehen',
-    dualSubtitle: 'Forex Trade Pro vereint zwei erstklassige Finanzdisziplinen in einem Hochgeschwindigkeitssystem.',
+    dualSubtitle: 'FXBY24 vereint zwei erstklassige Finanzdisziplinen in einem Hochgeschwindigkeitssystem.',
     forexModeBadge: 'Kurzfristiger Scalping-Modus',
     forexModeTitle: 'Kurzfristiges Scalping & Pip-Trading',
     forexModeDesc: 'Nutzen Sie schnelle Preisbewegungen in Zeiträumen von 5 Sekunden bis 1 Minute für sichere Gewinne.',
@@ -566,8 +566,8 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
     faqTitle: 'Häufig gestellte Fragen (FAQ)',
     faqSubtitle: 'Klare Antworten zu unserem 100% Bonus, Auszahlungsbedingungen und Sicherheit.',
 
-    footerDesc: 'Forex Trade Pro ist eine internationale Multi-Asset-Plattform für Forex und binäre Optionen.',
-    footerRights: '© 2026 Forex Trade Pro. Alle Rechte vorbehalten.',
+    footerDesc: 'FXBY24 ist eine internationale Multi-Asset-Plattform für Forex und binäre Optionen.',
+    footerRights: '© 2026 FXBY24. Alle Rechte vorbehalten.',
     footerWarning: 'Risikowarnung: Der Handel mit Hebelprodukten und binären Optionen birgt ein hohes Verlustrisiko.'
   },
   ar: {
@@ -620,7 +620,7 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
 
     dualBadge: 'بنية تداول مزدوجة',
     dualTitle: 'فهم تداول الفوركس والخيارات الثنائية',
-    dualSubtitle: 'تجمع منصة Forex Trade Pro بين سيولة الفوركس البنكية والخيارات الثنائية السريعة.',
+    dualSubtitle: 'تجمع منصة FXBY24 بين سيولة الفوركس البنكية والخيارات الثنائية السريعة.',
     forexModeBadge: 'نمط السكالبينج السريع',
     forexModeTitle: 'السكالبينج السريع وتداول النقاط (A to Z)',
     forexModeDesc: 'استفد من تحركات الأسعار السريعة في أطر زمنية من 5 ثوانٍ إلى دقيقة واحدة.',
@@ -653,8 +653,8 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
     faqTitle: 'الأسئلة الشائعة (FAQ)',
     faqSubtitle: 'إجابات واضحة حول بونص 100% وشروط السحب ومكافأة الإحالة والأمان.',
 
-    footerDesc: 'Forex Trade Pro هي منصة مالية دولية متعددة الأصول تقدم تداول الفوركس والخيارات الثنائية.',
-    footerRights: '© 2026 Forex Trade Pro. جميع الحقوق محفوظة.',
+    footerDesc: 'FXBY24 هي منصة مالية دولية متعددة الأصول تقدم تداول الفوركس والخيارات الثنائية.',
+    footerRights: '© 2026 FXBY24. جميع الحقوق محفوظة.',
     footerWarning: 'تحذير مخاطر: ينطوي تداول الفوركس والخيارات الثنائية على مخاطر عالية وقد لا يكون مناسباً لجميع المستثمرين.'
   },
   es: {
@@ -707,7 +707,7 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
 
     dualBadge: 'Arquitectura Dual',
     dualTitle: 'Comprender Forex y Binarias',
-    dualSubtitle: 'Forex Trade Pro une la liquidez institucional con contratos binarios de alta rentabilidad.',
+    dualSubtitle: 'FXBY24 une la liquidez institucional con contratos binarios de alta rentabilidad.',
     forexModeBadge: 'Modo Scalping Rápido',
     forexModeTitle: 'Scalping y Operaciones por Pips',
     forexModeDesc: 'Capture micro-movimientos en gráficos de 5 segundos a 1 minuto con spreads de 0.0 pips.',
@@ -740,8 +740,8 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
     faqTitle: 'Preguntas Frecuentes',
     faqSubtitle: 'Respuestas sobre el bono del 100%, retiros y recompensas por recomendación.',
 
-    footerDesc: 'Forex Trade Pro es una plataforma internacional para operaciones de Forex y Opciones Binarias.',
-    footerRights: '© 2026 Forex Trade Pro. Todos los derechos reservados.',
+    footerDesc: 'FXBY24 es una plataforma internacional para operaciones de Forex y Opciones Binarias.',
+    footerRights: '© 2026 FXBY24. Todos los derechos reservados.',
     footerWarning: 'Advertencia de Riesgo: El trading con apalancamiento y opciones binarias conlleva un alto nivel de riesgo.'
   },
   fr: {
@@ -794,7 +794,7 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
 
     dualBadge: 'Architecture Double Actif',
     dualTitle: 'Comprendre le Forex et le Binaire',
-    dualSubtitle: 'Forex Trade Pro réunit la liquidité bancaire et la rapidité des contrats à durée déterminée.',
+    dualSubtitle: 'FXBY24 réunit la liquidité bancaire et la rapidité des contrats à durée déterminée.',
     forexModeBadge: 'Mode Scalping Rapide',
     forexModeTitle: 'Scalping Court Terme & Pip Trading',
     forexModeDesc: 'Capturez les micro-mouvements en 5s à 1m avec une exécution ultra-rapide.',
@@ -827,8 +827,8 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
     faqTitle: 'Foire Aux Questions (FAQ)',
     faqSubtitle: 'Réponses claires sur le bonus 100%, les retraits et les primes de parrainage.',
 
-    footerDesc: 'Forex Trade Pro est une plateforme financière multi-actifs proposant le Forex et les options binaires.',
-    footerRights: '© 2026 Forex Trade Pro. Tous droits réservés.',
+    footerDesc: 'FXBY24 est une plateforme financière multi-actifs proposant le Forex et les options binaires.',
+    footerRights: '© 2026 FXBY24. Tous droits réservés.',
     footerWarning: 'Avertissement sur les Risques : Le trading de devises et d\'options comporte un niveau de risque élevé.'
   },
   pt: {
@@ -881,7 +881,7 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
 
     dualBadge: 'Arquitetura Dupla',
     dualTitle: 'Entendendo Forex & Binárias',
-    dualSubtitle: 'A Forex Trade Pro reúne liquidez institucional e contratos rápidos de tempo fixo.',
+    dualSubtitle: 'A FXBY24 reúne liquidez institucional e contratos rápidos de tempo fixo.',
     forexModeBadge: 'Modo Scalping Rápido',
     forexModeTitle: 'Scalping e Trading de Pips',
     forexModeDesc: 'Capture micro-movimentos rápidos em gráficos de 5s a 1m com spreads mínimos.',
@@ -914,8 +914,8 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
     faqTitle: 'Perguntas Frequentes',
     faqSubtitle: 'Respostas sobre o bônus de 100%, regras de saque e programa de indicações.',
 
-    footerDesc: 'A Forex Trade Pro é uma plataforma financeira de múltiplos ativos para Forex e Opções Binárias.',
-    footerRights: '© 2026 Forex Trade Pro. Todos os direitos reservados.',
+    footerDesc: 'A FXBY24 é uma plataforma financeira de múltiplos ativos para Forex e Opções Binárias.',
+    footerRights: '© 2026 FXBY24. Todos os direitos reservados.',
     footerWarning: 'Aviso de Risco: A negociação de Forex e Opções Binárias envolve alto risco de capital.'
   },
   zh: {
@@ -968,7 +968,7 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
 
     dualBadge: '双重资产架构',
     dualTitle: '了解外汇与二元期权交易',
-    dualSubtitle: 'Forex Trade Pro 将银行级外汇流动性与高收益固定时间期权融为一体。',
+    dualSubtitle: 'FXBY24 将银行级外汇流动性与高收益固定时间期权融为一体。',
     forexModeBadge: '短线超短线剥头皮',
     forexModeTitle: '超短线与点差交易 (A 到 Z)',
     forexModeDesc: '在 5 秒至 1 分钟周期内捕捉快速微小波动，锁定稳定点差利润。',
@@ -1001,8 +1001,8 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
     faqTitle: '常见问题解答 (FAQ)',
     faqSubtitle: '关于 100% 赠金、提现条款、$25 UID 奖励与账户安全的权威解答。',
 
-    footerDesc: 'Forex Trade Pro 是一家国际多资产金融平台，提供外汇点差及高回报二元期权交易。',
-    footerRights: '© 2026 Forex Trade Pro. 版权所有。',
+    footerDesc: 'FXBY24 是一家国际多资产金融平台，提供外汇点差及高回报二元期权交易。',
+    footerRights: '© 2026 FXBY24. 版权所有。',
     footerWarning: '风险提示：外汇与二元期权保证金交易具有高风险，可能并不适合所有投资者。'
   },
   ru: {
@@ -1055,7 +1055,7 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
 
     dualBadge: 'Двойная торговая архитектура',
     dualTitle: 'Все о Форекс и Бинарных опционах',
-    dualSubtitle: 'Forex Trade Pro объединяет межбанковскую ликвидность и быстрые контракты с фиксированным временем.',
+    dualSubtitle: 'FXBY24 объединяет межбанковскую ликвидность и быстрые контракты с фиксированным временем.',
     forexModeBadge: 'Режим скальпинга',
     forexModeTitle: 'Скальпинг и пипсовка (от A до Z)',
     forexModeDesc: 'Фиксируйте микро-движения цен на таймфреймах от 5 секунд до 1 минуты с ультранизким спредом.',
@@ -1088,8 +1088,8 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
     faqTitle: 'Часто задаваемые вопросы (FAQ)',
     faqSubtitle: 'Четкие ответы о бонусе 100%, выводе средств и реферальной системе.',
 
-    footerDesc: 'Forex Trade Pro — международная мультирыночная платформа для торговли на Форекс и опционах.',
-    footerRights: '© 2026 Forex Trade Pro. Все права защищены.',
+    footerDesc: 'FXBY24 — международная мультирыночная платформа для торговли на Форекс и опционах.',
+    footerRights: '© 2026 FXBY24. Все права защищены.',
     footerWarning: 'Предупреждение о рисках: Торговля с кредитным плечом и опционами связана с высоким риском убытков.'
   },
   tr: {
@@ -1142,7 +1142,7 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
 
     dualBadge: 'Çift Varlık Mimarisi',
     dualTitle: 'Forex ve İkili Opsiyonları Anlamak',
-    dualSubtitle: 'Forex Trade Pro kurumsal likiditeyi hızlı vadeli opsiyonlarla birleştirir.',
+    dualSubtitle: 'FXBY24 kurumsal likiditeyi hızlı vadeli opsiyonlarla birleştirir.',
     forexModeBadge: 'Kısa Vadeli Scalping',
     forexModeTitle: 'Scalping ve Pip İşlemleri (A\'dan Z\'ye)',
     forexModeDesc: '5 saniyeden 1 dakikaya kadar olan zaman dilimlerinde mikro fiyat hareketlerini yakalayın.',
@@ -1175,8 +1175,8 @@ export const LANDING_TRANSLATIONS: Record<LandingLanguageCode, LandingTranslatio
     faqTitle: 'Sıkça Sorulan Sorular (SSS)',
     faqSubtitle: '%100 bonus, para çekme ve referans ödülleri hakkında net yanıtlar.',
 
-    footerDesc: 'Forex Trade Pro, Forex ve ikili opsiyon işlemleri sunan uluslararası bir finans platformudur.',
-    footerRights: '© 2026 Forex Trade Pro. Tüm hakları saklıdır.',
+    footerDesc: 'FXBY24, Forex ve ikili opsiyon işlemleri sunan uluslararası bir finans platformudur.',
+    footerRights: '© 2026 FXBY24. Tüm hakları saklıdır.',
     footerWarning: 'Risk Uyarısı: Kaldıraçlı Forex ve ikili opsiyon işlemleri yüksek sermaye kaybı riski taşır.'
   }
 };

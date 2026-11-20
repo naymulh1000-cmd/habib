@@ -575,7 +575,7 @@ export default function App() {
               </main>
 
               <footer className="relative z-20 w-full px-4 text-center text-xs text-gray-500">
-                <p>© 2026 Forex Trade Pro • Standalone Admin Console</p>
+                <p>© 2026 FXBY24 • Standalone Admin Console</p>
               </footer>
             </div>
           )}

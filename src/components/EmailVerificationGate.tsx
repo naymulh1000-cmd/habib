@@ -109,9 +109,9 @@ export const EmailVerificationGate: React.FC<EmailVerificationGateProps> = ({
 
         {/* Title */}
         <h2 className="text-xl sm:text-2xl font-black uppercase tracking-wider text-white mb-1">
-          Verify Your Forex Trade Pro Account
+          Verify Your FXBY24 Account
         </h2>
-        <p className="text-xs text-gray-400 mb-2">Sender: <span className="text-gray-200 font-semibold">Forex Trade Pro</span> &bull; Subject: <span className="text-gray-200 font-semibold">Verify Your Forex Trade Pro Account</span></p>
+        <p className="text-xs text-gray-400 mb-2">Sender: <span className="text-gray-200 font-semibold">FXBY24</span> &bull; Subject: <span className="text-gray-200 font-semibold">Verify Your FXBY24 Account</span></p>
 
         {/* Primary Required Banner Message */}
         <div className="w-full my-2.5 p-3.5 rounded-2xl bg-[#F5B301]/10 border border-[#F5B301]/30 text-[#F5B301] text-xs sm:text-sm font-bold flex items-center justify-center gap-2 shadow-md">

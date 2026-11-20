@@ -39,7 +39,7 @@ export const ShareReferralModal: React.FC<ShareReferralModalProps> = ({
   if (!isOpen) return null;
 
   const effectiveLink = referralLink || `https://fxby24.com/?ref=${referralCode}`;
-  const shareText = `Start trading on Forex Trade Pro! Create an account with my referral link and get a bonus when you deposit $250 or more: ${effectiveLink}`;
+  const shareText = `Start trading on FXBY24! Create an account with my referral link and get a bonus when you deposit $250 or more: ${effectiveLink}`;
   const encodedText = encodeURIComponent(shareText);
   const encodedUrl = encodeURIComponent(effectiveLink);
 
@@ -68,7 +68,7 @@ export const ShareReferralModal: React.FC<ShareReferralModalProps> = ({
     if (typeof navigator !== 'undefined' && navigator.share) {
       try {
         await navigator.share({
-          title: 'Forex Trade Pro Referral',
+          title: 'FXBY24 Referral',
           text: shareText,
           url: effectiveLink
         });
@@ -113,7 +113,7 @@ export const ShareReferralModal: React.FC<ShareReferralModalProps> = ({
       name: 'Gmail',
       color: 'bg-rose-500/15 border-rose-500/30 hover:bg-rose-500/25 text-rose-400',
       iconColor: 'bg-rose-500 text-white',
-      action: () => window.open(`mailto:?subject=${encodeURIComponent('Join Forex Trade Pro - Get Trading Bonus')}&body=${encodedText}`, '_blank')
+      action: () => window.open(`mailto:?subject=${encodeURIComponent('Join FXBY24 - Get Trading Bonus')}&body=${encodedText}`, '_blank')
     }
   ];
 

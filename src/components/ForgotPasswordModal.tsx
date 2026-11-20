@@ -80,12 +80,12 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
             </div>
             <div>
               <h3 className="text-xl font-bold text-white">Reset Password</h3>
-              <p className="text-xs text-gray-400">Forex Trade Pro Account Security</p>
+              <p className="text-xs text-gray-400">FXBY24 Account Security</p>
             </div>
           </div>
 
           <p className="text-sm text-gray-300 mb-5">
-            Enter the email address registered with your Forex Trade Pro account and we will send you a password reset link.
+            Enter the email address registered with your FXBY24 account and we will send you a password reset link.
           </p>
 
           {message && (

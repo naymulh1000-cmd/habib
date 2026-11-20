@@ -40,12 +40,14 @@ tradingViewMasterFeed.start();
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-// Enable gzip/deflate compression for all requests
+// Enable gzip/deflate compression for standard requests (NEVER compress SSE streams!)
 app.use(compression({
   level: 6,
   threshold: 1024,
   filter: (req, res) => {
     if (req.headers['x-no-compression']) return false;
+    if (req.path === '/api/otc/stream' || req.path === '/api/live-market/stream') return false;
+    if ((req.headers.accept || '').includes('text/event-stream')) return false;
     return compression.filter(req, res);
   }
 }));
@@ -615,17 +617,29 @@ function logAdminActionServer(action: string, meta: Record<string, any>): void {
 }
 
 // 1. Branding (Master Logo, App Name, Brand Subtitle)
+function normalizeServerBranding(raw: any) {
+  const rawName = String(raw?.brandName || '').trim();
+  const isLegacyName = !rawName || /^forex\s*trade(\s*pro)?$/i.test(rawName);
+  const rawSub = String(raw?.brandSubtitle ?? '').trim();
+  return {
+    logoUrl: raw?.logoUrl || '/logo.png',
+    brandName: isLegacyName ? 'FXBY24' : rawName,
+    brandSubtitle: isLegacyName && (!rawSub || /^pro$/i.test(rawSub)) ? '' : rawSub,
+    updatedAt: raw?.updatedAt || new Date().toISOString()
+  };
+}
+
 app.get('/api/branding', (_req, res) => {
   try {
     if (fs.existsSync(BRANDING_FILE)) {
       const raw = fs.readFileSync(BRANDING_FILE, 'utf8');
-      return res.json(JSON.parse(raw));
+      return res.json(normalizeServerBranding(JSON.parse(raw)));
     }
   } catch (_) {}
   return res.json({
     logoUrl: '/logo.png',
-    brandName: 'Forex Trade',
-    brandSubtitle: 'PRO',
+    brandName: 'FXBY24',
+    brandSubtitle: '',
     updatedAt: new Date().toISOString()
   });
 });
@@ -635,22 +649,22 @@ app.post('/api/branding', (req, res) => {
     const { logoUrl, brandName, brandSubtitle } = req.body;
     let current: any = {
       logoUrl: '/logo.png',
-      brandName: 'Forex Trade',
-      brandSubtitle: 'PRO',
+      brandName: 'FXBY24',
+      brandSubtitle: '',
       updatedAt: new Date().toISOString()
     };
     if (fs.existsSync(BRANDING_FILE)) {
       try {
-        current = JSON.parse(fs.readFileSync(BRANDING_FILE, 'utf8'));
+        current = normalizeServerBranding(JSON.parse(fs.readFileSync(BRANDING_FILE, 'utf8')));
       } catch (_) {}
     }
-    const updated = {
+    const updated = normalizeServerBranding({
       ...current,
       ...(logoUrl !== undefined ? { logoUrl } : {}),
       ...(brandName !== undefined ? { brandName } : {}),
       ...(brandSubtitle !== undefined ? { brandSubtitle } : {}),
       updatedAt: new Date().toISOString()
-    };
+    });
     fs.writeFileSync(BRANDING_FILE, JSON.stringify(updated, null, 2), 'utf8');
     return res.json(updated);
   } catch (err: any) {
@@ -1592,7 +1606,7 @@ interface OtcControlConfig {
 let otcControlConfig: OtcControlConfig = {
   exposureControlEnabled: false,
   adminPredictorMode: true,
-  lastUpdated: Date.now()
+  lastUpdated: 0
 };
 
 try {
@@ -1603,7 +1617,7 @@ try {
       otcControlConfig = {
         exposureControlEnabled: parsed.exposureControlEnabled === true,
         adminPredictorMode: parsed.adminPredictorMode !== false,
-        lastUpdated: parsed.lastUpdated || Date.now()
+        lastUpdated: Number(parsed.lastUpdated || 0)
       };
     }
   }
@@ -1614,6 +1628,86 @@ function persistOtcControlConfig() {
     fs.writeFileSync(OTC_CONTROL_FILE, JSON.stringify(otcControlConfig, null, 2), 'utf8');
   } catch (_) {}
 }
+
+let firebaseProjectCfg: { projectId: string; firestoreDatabaseId: string } = {
+  projectId: 'forex-treade-pro-8a25c',
+  firestoreDatabaseId: '(default)'
+};
+try {
+  const fbCfgPath = path.join(process.cwd(), 'firebase-applet-config.json');
+  if (fs.existsSync(fbCfgPath)) {
+    const rawFb = JSON.parse(fs.readFileSync(fbCfgPath, 'utf8'));
+    if (rawFb && rawFb.projectId) {
+      firebaseProjectCfg = {
+        projectId: String(rawFb.projectId),
+        firestoreDatabaseId: String(rawFb.firestoreDatabaseId || '(default)')
+      };
+    }
+  }
+} catch (_) {}
+
+async function syncOtcControlsFromFirestore() {
+  try {
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseProjectCfg.projectId}/databases/${encodeURIComponent(firebaseProjectCfg.firestoreDatabaseId)}/documents/settings/otc_controls`;
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 3000);
+    const resp = await fetch(url, { signal: controller.signal });
+    clearTimeout(t);
+    if (!resp.ok) return;
+    const docData: any = await resp.json();
+    const fields = docData && docData.fields;
+    if (!fields) return;
+
+    const remoteExp = fields.exposureControlEnabled?.booleanValue;
+    const remotePred = fields.adminPredictorMode?.booleanValue;
+    const remoteUpdated = Number(
+      fields.updatedAt?.integerValue ?? fields.updatedAt?.doubleValue ?? 0
+    );
+
+    if (typeof remoteExp === 'boolean' && (remoteUpdated > otcControlConfig.lastUpdated || otcControlConfig.lastUpdated === 0)) {
+      const nextExp = remoteExp;
+      const nextPred = typeof remotePred === 'boolean' ? (nextExp ? false : remotePred) : !nextExp;
+      const changed = otcControlConfig.exposureControlEnabled !== nextExp || otcControlConfig.adminPredictorMode !== nextPred;
+      otcControlConfig = {
+        exposureControlEnabled: nextExp,
+        adminPredictorMode: nextPred,
+        lastUpdated: remoteUpdated || Date.now()
+      };
+      persistOtcControlConfig();
+      if (changed) {
+        marketsConfig.forEach(m => {
+          const isOtc = m.category === 'otc' || (m.symbol && m.symbol.toUpperCase().includes('OTC')) || m.isRealMarket === false;
+          if (isOtc) updateServerLiveExposureForSymbol(m.symbol);
+        });
+      }
+    }
+  } catch (_) {}
+}
+
+async function pushOtcControlsToFirestore(cfg: OtcControlConfig) {
+  try {
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseProjectCfg.projectId}/databases/${encodeURIComponent(firebaseProjectCfg.firestoreDatabaseId)}/documents/settings/otc_controls?updateMask.fieldPaths=exposureControlEnabled&updateMask.fieldPaths=adminPredictorMode&updateMask.fieldPaths=updatedAt&updateMask.fieldPaths=updatedBy`;
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 3000);
+    await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        fields: {
+          exposureControlEnabled: { booleanValue: Boolean(cfg.exposureControlEnabled) },
+          adminPredictorMode: { booleanValue: Boolean(cfg.adminPredictorMode) },
+          updatedAt: { integerValue: String(Math.floor(cfg.lastUpdated || Date.now())) },
+          updatedBy: { stringValue: 'server' }
+        }
+      })
+    });
+    clearTimeout(t);
+  } catch (_) {}
+}
+
+syncOtcControlsFromFirestore();
+setInterval(syncOtcControlsFromFirestore, 8000);
 
 // ─────────────────────────────────────────────────────────────
 // Authoritative OTC Deterministic Candle Endpoint:
@@ -1629,6 +1723,11 @@ function updateServerLiveExposureForSymbol(rawSymbol: string) {
         downVolume: 0,
         netExposure: 0,
         biasDirection: 'NEUTRAL',
+        heavySide: 'NONE',
+        heavyEntryPrice: 0,
+        minRemainingSec: 99999,
+        minRemainingMs: 99999000,
+        activeDurationMs: 60000,
         enabled: false,
         activeOrdersCount: 0
       });
@@ -1655,17 +1754,26 @@ function updateServerLiveExposureForSymbol(rawSymbol: string) {
 
     let upVolume = 0;
     let downVolume = 0;
-    let minRemainingSec = 60;
+    let minRemainingMs = 99999000;
+    let activeDurationMs = 60000;
 
     activeLiveTrades.forEach(t => {
       const amount = Number(t.amount || t.investment || 1);
       const isUp = t.type === 'CALL' || t.type === 'UP' || t.type === 'BUY';
       const isDown = t.type === 'PUT' || t.type === 'DOWN' || t.type === 'SELL';
-      const remSec = t.expiryTimestamp ? Math.max(0, Math.ceil((t.expiryTimestamp - now) / 1000)) : 60;
-      if (remSec < minRemainingSec) minRemainingSec = remSec;
+      const remMs = t.expiryTimestamp ? Math.max(0, t.expiryTimestamp - now) : ((t.expirySeconds || 60) * 1000);
+      const durMs = t.expiryTimestamp && t.openTimestamp
+        ? Math.max(4000, t.expiryTimestamp - t.openTimestamp)
+        : Math.max(4000, (t.expirySeconds || 60) * 1000);
+      if (remMs < minRemainingMs) {
+        minRemainingMs = remMs;
+        activeDurationMs = durMs;
+      }
       if (isUp) upVolume += amount;
       else if (isDown) downVolume += amount;
     });
+
+    const minRemainingSec = minRemainingMs < 99999000 ? Math.max(0, Math.ceil(minRemainingMs / 1000)) : 60;
 
     let biasDirection: 'UP' | 'DOWN' | 'NEUTRAL' = 'NEUTRAL';
     let heavySide: 'UP' | 'DOWN' | 'NONE' = 'NONE';
@@ -1682,9 +1790,11 @@ function updateServerLiveExposureForSymbol(rawSymbol: string) {
       const downOrders = activeLiveTrades.filter(t => (t.type === 'PUT' || t.type === 'DOWN' || t.type === 'SELL') && typeof t.entryPrice === 'number');
       heavyEntryPrice = downOrders.length > 0 ? downOrders.reduce((sum, o) => sum + (o.entryPrice * (Number(o.amount) || 1)), 0) / (downVolume || 1) : 0;
     } else if (upVolume > 0 && downVolume > 0 && upVolume === downVolume) {
-      // Tie-breaker: force DOWN to neutralize long exposure
+      // Tie-breaker: steer DOWN against UP side
       biasDirection = 'DOWN';
       heavySide = 'UP';
+      const upOrders = activeLiveTrades.filter(t => (t.type === 'CALL' || t.type === 'UP' || t.type === 'BUY') && typeof t.entryPrice === 'number');
+      heavyEntryPrice = upOrders.length > 0 ? upOrders.reduce((sum, o) => sum + (o.entryPrice * (Number(o.amount) || 1)), 0) / (upVolume || 1) : 0;
     }
 
     const isEnabled = Boolean(otcControlConfig.exposureControlEnabled && (upVolume > 0 || downVolume > 0) && biasDirection !== 'NEUTRAL');
@@ -1698,6 +1808,8 @@ function updateServerLiveExposureForSymbol(rawSymbol: string) {
       heavySide,
       heavyEntryPrice,
       minRemainingSec,
+      minRemainingMs: minRemainingMs < 99999000 ? minRemainingMs : 60000,
+      activeDurationMs,
       enabled: isEnabled,
       activeOrdersCount: activeLiveTrades.length
     });
@@ -1727,36 +1839,21 @@ function loadOtcClosedCandles() {
           const arr = parsed[k];
           if (Array.isArray(arr)) {
             arr.forEach((c: any) => {
-              if (c && typeof c.time === 'number' && typeof c.open === 'number' && typeof c.close === 'number') {
-                const isGold = (k || '').includes('GOLD') || (k || '').includes('XAU');
-                const isCrypto = (k || '').includes('BTC') || (k || '').includes('ETH');
-                const isJpy = (k || '').includes('JPY');
-                const precision = isGold ? 2 : isJpy ? 3 : isCrypto ? 2 : 5;
-                const pipStep = Math.pow(10, -precision);
-
-                const body = Math.abs(c.close - c.open);
-                const maxBody = isGold ? 1.80 : isCrypto ? (c.open || 100) * 0.0012 : isJpy ? pipStep * 45 : pipStep * 40;
-                let cleanClose = c.close;
-                if (body > maxBody) {
-                  cleanClose = c.close > c.open ? c.open + maxBody : c.open - maxBody;
-                }
-                const cleanBody = Math.abs(cleanClose - c.open);
-
-                const maxWick = isGold
-                  ? Math.max(cleanBody * 0.20, 0.25)
-                  : isCrypto
-                    ? Math.max(cleanBody * 0.20, (c.open || 100) * 0.00025)
-                    : isJpy
-                      ? Math.max(cleanBody * 0.20, pipStep * 5.0)
-                      : Math.max(cleanBody * 0.20, pipStep * 4.0);
-
-                const cleanHigh = Math.min(c.high, Math.max(c.open, cleanClose) + maxWick);
-                const cleanLow = Math.max(c.low, Math.min(c.open, cleanClose) - maxWick);
+              if (
+                c &&
+                typeof c.time === 'number' && Number.isFinite(c.time) &&
+                typeof c.open === 'number' && Number.isFinite(c.open) && c.open > 0 &&
+                typeof c.close === 'number' && Number.isFinite(c.close) && c.close > 0 &&
+                typeof c.high === 'number' && Number.isFinite(c.high) &&
+                typeof c.low === 'number' && Number.isFinite(c.low)
+              ) {
                 m.set(c.time, {
-                  ...c,
-                  close: Number(cleanClose.toFixed(precision)),
-                  high: Number(cleanHigh.toFixed(precision)),
-                  low: Number(cleanLow.toFixed(precision))
+                  time: c.time,
+                  open: c.open,
+                  high: Math.max(c.high, c.open, c.close),
+                  low: Math.min(c.low, c.open, c.close),
+                  close: c.close,
+                  volume: Number(c.volume || 100)
                 });
               }
             });
@@ -1777,194 +1874,522 @@ function persistOtcClosedCandles() {
     try {
       const obj: Record<string, any[]> = {};
       otcClosedCandlesStore.forEach((map, k) => {
-        const arr = Array.from(map.values()).sort((a, b) => a.time - b.time).slice(-800);
+        const limit = k.endsWith('_M1') ? 1500 : 800;
+        const arr = Array.from(map.values()).sort((a, b) => a.time - b.time).slice(-limit);
         obj[k] = arr;
       });
-      fs.writeFileSync(OTC_CANDLES_FILE, JSON.stringify(obj), 'utf8');
+      fs.writeFile(OTC_CANDLES_FILE, JSON.stringify(obj), 'utf8', () => {});
     } catch (_) {}
-  }, 1000);
+  }, 1500);
 }
 
-// POST finalize a completed OTC candle into permanent server store
-app.post('/api/otc-candles/finalize', (req, res) => {
+// POST finalize: Server is strictly authoritative for all OTC candles.
+// Ignore client-submitted OTC candles so slow/disconnected phones can never corrupt global OTC history.
+app.post('/api/otc-candles/finalize', (_req, res) => {
+  return res.json({ success: true, ignored: true, reason: 'server_authoritative' });
+});
+
+// Global In-Memory Authoritative Active Candle Cache per OTC symbol & timeframe
+const otcActiveCandlesCache = new Map<string, any>();
+const otcStreamClients = new Set<express.Response>();
+const SUB_MINUTE_TFS: { id: 'S1' | 'S5' | 'S15' | 'S30'; secs: number }[] = [
+  { id: 'S1', secs: 1 },
+  { id: 'S5', secs: 5 },
+  { id: 'S15', secs: 15 },
+  { id: 'S30', secs: 30 }
+];
+const otcSteerSmoothState = new Map<string, {
+  lastEmittedPrice: number;
+  lastBucketTime: number;
+  lastExposureActive: boolean;
+  lastBias: string;
+  residualOffset: number;
+}>();
+
+let otcTickSeq = 0;
+let lastOtcExposureRefreshAt = 0;
+let lastOtcTickSnapshotPayload: Record<string, any> = {};
+let cachedLiveTicksJson = JSON.stringify({
+  success: true,
+  seq: 0,
+  serverTime: Date.now(),
+  exposureControlEnabled: Boolean(otcControlConfig.exposureControlEnabled),
+  adminPredictorMode: Boolean(otcControlConfig.adminPredictorMode),
+  ticks: {}
+});
+
+function refreshAllServerOtcExposuresOnce(now: number) {
   try {
-    const { symbol, timeframe, candle } = req.body;
-    if (!symbol || !candle || typeof candle.time !== 'number') {
-      return res.status(400).json({ error: 'Invalid candle data' });
+    if (!otcControlConfig || !otcControlConfig.exposureControlEnabled) {
+      marketsConfig.forEach(m => {
+        const isOtc = m.category === 'otc' || (m.symbol && m.symbol.toUpperCase().includes('OTC')) || m.isRealMarket === false;
+        if (!isOtc) return;
+        setMarketLiveExposure(m.symbol, {
+          symbol: m.symbol,
+          upVolume: 0,
+          downVolume: 0,
+          netExposure: 0,
+          biasDirection: 'NEUTRAL',
+          heavySide: 'NONE',
+          heavyEntryPrice: 0,
+          minRemainingSec: 99999,
+          minRemainingMs: 99999000,
+          activeDurationMs: 60000,
+          enabled: false,
+          activeOrdersCount: 0
+        });
+      });
+      return;
     }
-    const cleanSym = symbol.trim().toUpperCase();
-    const tf = timeframe || 'M1';
-    const key = `${cleanSym}_${tf}`;
-    let map = otcClosedCandlesStore.get(key);
-    if (!map) {
-      map = new Map();
-      otcClosedCandlesStore.set(key, map);
+
+    const allTrades = getStoredUserTradesServer();
+    const ADMIN_EMAILS = ['naymulh1000@gmail.com', 'admin@fxby24.com', 'admin@forextradepro.com'];
+    const otcMarkets = marketsConfig.filter(m =>
+      m.category === 'otc' || (m.symbol && m.symbol.toUpperCase().includes('OTC')) || m.isRealMarket === false
+    );
+
+    // Pre-group active live trades in a single pass for O(N) performance even with thousands of users
+    const tradesBySymKey = new Map<string, any[]>();
+    for (let i = 0; i < allTrades.length; i++) {
+      const t = allTrades[i];
+      if (!t || t.status !== 'OPEN') continue;
+      if (t.expiryTimestamp && t.expiryTimestamp <= now) continue;
+      if (t.userEmail && ADMIN_EMAILS.includes(t.userEmail.toLowerCase().trim())) continue;
+      const isLiveAccount = t.accountType === 'live' && !t.isDemo && t.accountType !== 'demo' && t.accountType !== 'bonus';
+      if (!isLiveAccount) continue;
+      const tSym = (t.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (!tSym) continue;
+      let list = tradesBySymKey.get(tSym);
+      if (!list) {
+        list = [];
+        tradesBySymKey.set(tSym, list);
+      }
+      list.push(t);
     }
+
+    otcMarkets.forEach(m => {
+      const symKey = m.symbol.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const matched: any[] = [];
+      tradesBySymKey.forEach((list, tSym) => {
+        if (tSym === symKey || symKey.includes(tSym) || tSym.includes(symKey)) {
+          for (let j = 0; j < list.length; j++) matched.push(list[j]);
+        }
+      });
+
+      let upVolume = 0;
+      let downVolume = 0;
+      let minRemainingMs = 99999000;
+      let activeDurationMs = 60000;
+      let upWeightedSum = 0;
+      let downWeightedSum = 0;
+
+      matched.forEach(t => {
+        const amount = Number(t.amount || t.investment || 1);
+        const isUp = t.type === 'CALL' || t.type === 'UP' || t.type === 'BUY';
+        const isDown = t.type === 'PUT' || t.type === 'DOWN' || t.type === 'SELL';
+        const remMs = t.expiryTimestamp ? Math.max(0, t.expiryTimestamp - now) : ((t.expirySeconds || 60) * 1000);
+        const durMs = t.expiryTimestamp && t.openTimestamp
+          ? Math.max(4000, t.expiryTimestamp - t.openTimestamp)
+          : Math.max(4000, (t.expirySeconds || 60) * 1000);
+        if (remMs < minRemainingMs) {
+          minRemainingMs = remMs;
+          activeDurationMs = durMs;
+        }
+        if (isUp) {
+          upVolume += amount;
+          if (typeof t.entryPrice === 'number') upWeightedSum += t.entryPrice * amount;
+        } else if (isDown) {
+          downVolume += amount;
+          if (typeof t.entryPrice === 'number') downWeightedSum += t.entryPrice * amount;
+        }
+      });
+
+      const minRemainingSec = minRemainingMs < 99999000 ? Math.max(0, Math.ceil(minRemainingMs / 1000)) : 60;
+      let biasDirection: 'UP' | 'DOWN' | 'NEUTRAL' = 'NEUTRAL';
+      let heavySide: 'UP' | 'DOWN' | 'NONE' = 'NONE';
+      let heavyEntryPrice = 0;
+
+      if (upVolume > downVolume) {
+        biasDirection = 'DOWN';
+        heavySide = 'UP';
+        heavyEntryPrice = upVolume > 0 ? upWeightedSum / upVolume : 0;
+      } else if (downVolume > upVolume) {
+        biasDirection = 'UP';
+        heavySide = 'DOWN';
+        heavyEntryPrice = downVolume > 0 ? downWeightedSum / downVolume : 0;
+      } else if (upVolume > 0 && downVolume > 0 && upVolume === downVolume) {
+        biasDirection = 'DOWN';
+        heavySide = 'UP';
+        heavyEntryPrice = upVolume > 0 ? upWeightedSum / upVolume : 0;
+      }
+
+      const isEnabled = Boolean(otcControlConfig.exposureControlEnabled && (upVolume > 0 || downVolume > 0) && biasDirection !== 'NEUTRAL');
+      setMarketLiveExposure(m.symbol, {
+        symbol: m.symbol,
+        upVolume,
+        downVolume,
+        netExposure: upVolume - downVolume,
+        biasDirection,
+        heavySide,
+        heavyEntryPrice,
+        minRemainingSec,
+        minRemainingMs: minRemainingMs < 99999000 ? minRemainingMs : 60000,
+        activeDurationMs,
+        enabled: isEnabled,
+        activeOrdersCount: matched.length
+      });
+    });
+  } catch (_) {}
+}
+
+function finalizeBucketIntoStore(key: string, candle: SavedOtcCandle) {
+  let map = otcClosedCandlesStore.get(key);
+  if (!map) {
+    map = new Map();
+    otcClosedCandlesStore.set(key, map);
+  }
+  if (!map.has(candle.time)) {
     map.set(candle.time, {
       time: candle.time,
       open: candle.open,
-      high: candle.high,
-      low: candle.low,
+      high: Math.max(candle.high, candle.open, candle.close),
+      low: Math.min(candle.low, candle.open, candle.close),
       close: candle.close,
       volume: candle.volume || 100
     });
-    persistOtcClosedCandles();
-    return res.json({ success: true });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    const maxCap = key.endsWith('_M1') ? 1600 : 1100;
+    if (map.size > maxCap) {
+      const oldestKey = map.keys().next().value;
+      if (oldestKey !== undefined) map.delete(oldestKey);
+    }
+    return true;
   }
-});
+  return false;
+}
 
-// Global In-Memory Authoritative Active Candle Cache per OTC symbol
-const otcActiveCandlesCache = new Map<string, any>();
-const otcStreamClients = new Set<express.Response>();
+// Fixed-epoch invariant deterministic backfill (guarantees identical seed chain across restarts & request counts)
+function fillDeterministicRangeAnchored(
+  market: MarketPairConfig,
+  map: Map<number, SavedOtcCandle>,
+  fromBucket: number,
+  toBucket: number,
+  tfSecs: number
+): boolean {
+  if (fromBucket > toBucket) return false;
+  const timeStepMs = tfSecs * 1000;
+  // Anchor rollingOpen to an invariant 24-hour UTC boundary so shifting request counts never shift candles
+  const dayMs = 86400000;
+  const epochAnchor = Math.floor(fromBucket / dayMs) * dayMs;
+  let changed = false;
+  let rollingOpen: number | undefined;
 
-// 1. High-Frequency (100ms) Micro-Sub-Tick Real-Time Engine (10-20 sub-ticks/sec):
-// Generates continuous, fluid micro-fluctuations using the Stochastic Process Model.
-// Eliminates 1-second laggy jumps so all devices globally see silky smooth live candles!
-setInterval(() => {
-  try {
-    const now = Date.now();
-    const timeframe = 'M1';
-    const tfSecs = 60;
-    const timeStepMs = 60000;
-    const currentBucketTime = Math.floor(now / timeStepMs) * timeStepMs;
+  // Check if a candle immediately precedes epochAnchor in our saved store
+  const preAnchor = map.get(epochAnchor - timeStepMs);
+  if (preAnchor) {
+    rollingOpen = preAnchor.close;
+  }
 
-    const tickPayload: Record<string, any> = {};
-    let hasTicks = false;
+  for (let t = epochAnchor; t <= toBucket; t += timeStepMs) {
+    const existing = map.get(t);
+    if (existing) {
+      rollingOpen = existing.close;
+    } else {
+      const hist = getDeterministicHistoricalCandle(market, t, tfSecs, rollingOpen);
+      const cleanCandle: SavedOtcCandle = {
+        time: t,
+        open: hist.open,
+        high: Math.max(hist.high, hist.open, hist.close),
+        low: Math.min(hist.low, hist.open, hist.close),
+        close: hist.close,
+        volume: hist.volume || 100
+      };
+      if (t >= fromBucket - timeStepMs) {
+        map.set(t, cleanCandle);
+        changed = true;
+      }
+      rollingOpen = cleanCandle.close;
+    }
+  }
+  return changed;
+}
 
-    marketsConfig.forEach(m => {
-      const isOtc = m.category === 'otc' || (m.symbol && m.symbol.toUpperCase().includes('OTC')) || m.isRealMarket === false;
-      if (!isOtc) return;
+function stepServerOtcEngineTick(now: number, forceBroadcast: boolean = true) {
+  const timeframe = 'M1';
+  const tfSecs = 60;
+  const timeStepMs = 60000;
+  const currentBucketTime = Math.floor(now / timeStepMs) * timeStepMs;
 
-      const cleanSym = m.symbol.trim().toUpperCase();
-      const key = `${cleanSym}_${timeframe}`;
-      const existingActive = otcActiveCandlesCache.get(key);
-      const isCurrent = Boolean(existingActive && existingActive.time === currentBucketTime);
-      const stableOpen = isCurrent ? existingActive!.open : (existingActive ? existingActive.close : undefined);
-      const stableHigh = isCurrent ? existingActive!.high : undefined;
-      const stableLow = isCurrent ? existingActive!.low : undefined;
+  if (now - lastOtcExposureRefreshAt >= 240) {
+    lastOtcExposureRefreshAt = now;
+    refreshAllServerOtcExposuresOnce(now);
+  }
 
-      const { activeCandle, livePrice } = getDeterministicActiveCandle(m, currentBucketTime, now, tfSecs, stableOpen, stableHigh, stableLow);
+  const tickPayload: Record<string, any> = {};
+  let hasTicks = false;
+  let closedAnyCandle = false;
 
-      const openPrice = typeof stableOpen === 'number' ? stableOpen : activeCandle.open;
-      const currentHigh = activeCandle.high;
-      const currentLow = activeCandle.low;
+  marketsConfig.forEach(m => {
+    const isOtc = m.category === 'otc' || (m.symbol && m.symbol.toUpperCase().includes('OTC')) || m.isRealMarket === false;
+    if (!isOtc) return;
 
-      const updatedActive = {
-        time: currentBucketTime,
-        timestamp: currentBucketTime,
-        open: openPrice,
-        high: currentHigh,
-        low: currentLow,
+    const expNow = getMarketLiveExposure(m.symbol);
+    const expActiveNow = Boolean(expNow && expNow.enabled && expNow.biasDirection !== 'NEUTRAL');
+    const expBiasNow = expNow ? expNow.biasDirection : 'NEUTRAL';
+
+    const precision = m.precision ?? ((m.symbol || '').includes('JPY') ? 3 : (m.symbol || '').includes('BTC') || (m.symbol || '').includes('XAU') ? 2 : 5);
+    const cleanSym = m.symbol.trim().toUpperCase();
+    const key = `${cleanSym}_${timeframe}`;
+
+    let m1ClosedMap = otcClosedCandlesStore.get(key);
+    if (!m1ClosedMap) {
+      m1ClosedMap = new Map();
+      otcClosedCandlesStore.set(key, m1ClosedMap);
+    }
+
+    const existingActive = otcActiveCandlesCache.get(key);
+    // If M1 rolled over to a new minute bucket, finalize the finished M1 candle cleanly into otcClosedCandlesStore
+    if (existingActive && existingActive.time < currentBucketTime) {
+      if (finalizeBucketIntoStore(key, existingActive)) {
+        closedAnyCandle = true;
+      }
+      let rollingOpen = existingActive.close;
+      for (let t = existingActive.time + timeStepMs; t < currentBucketTime; t += timeStepMs) {
+        if (!m1ClosedMap.has(t)) {
+          const hist = getDeterministicHistoricalCandle(m, t, tfSecs, rollingOpen);
+          const c: SavedOtcCandle = {
+            time: t,
+            open: rollingOpen,
+            high: Math.max(rollingOpen, hist.high, hist.close),
+            low: Math.min(rollingOpen, hist.low, hist.close),
+            close: hist.close,
+            volume: hist.volume || 100
+          };
+          m1ClosedMap.set(t, c);
+          rollingOpen = c.close;
+          closedAnyCandle = true;
+        } else {
+          rollingOpen = m1ClosedMap.get(t)!.close;
+        }
+      }
+    }
+
+    const prevClosed = m1ClosedMap.get(currentBucketTime - timeStepMs);
+    const isCurrent = Boolean(existingActive && existingActive.time === currentBucketTime);
+    const stableOpen = isCurrent
+      ? existingActive!.open
+      : (existingActive ? existingActive.close : (prevClosed ? prevClosed.close : undefined));
+    const stableHigh = isCurrent ? existingActive!.high : undefined;
+    const stableLow = isCurrent ? existingActive!.low : undefined;
+
+    const { activeCandle, livePrice: rawDetPrice } = getDeterministicActiveCandle(
+      m,
+      currentBucketTime,
+      now,
+      tfSecs,
+      stableOpen,
+      stableHigh,
+      stableLow
+    );
+
+    let smoothState = otcSteerSmoothState.get(cleanSym);
+    if (!smoothState) {
+      smoothState = {
+        lastEmittedPrice: rawDetPrice,
+        lastBucketTime: currentBucketTime,
+        lastExposureActive: expActiveNow,
+        lastBias: expBiasNow,
+        residualOffset: 0
+      };
+      otcSteerSmoothState.set(cleanSym, smoothState);
+    }
+
+    if (smoothState.lastBucketTime !== currentBucketTime) {
+      smoothState.residualOffset = 0;
+      smoothState.lastBucketTime = currentBucketTime;
+    } else {
+      const modeTransitioned = smoothState.lastExposureActive !== expActiveNow || smoothState.lastBias !== expBiasNow;
+      if (modeTransitioned) {
+        smoothState.residualOffset = smoothState.lastEmittedPrice - rawDetPrice;
+      }
+      smoothState.residualOffset *= expActiveNow ? 0.88 : 0.955;
+      if (Math.abs(smoothState.residualOffset) < Math.pow(10, -precision) * 0.25) {
+        smoothState.residualOffset = 0;
+      }
+    }
+
+    const livePrice = Number((rawDetPrice + smoothState.residualOffset).toFixed(precision));
+    smoothState.lastEmittedPrice = livePrice;
+    smoothState.lastExposureActive = expActiveNow;
+    smoothState.lastBias = expBiasNow;
+
+    const openPrice = typeof stableOpen === 'number' ? stableOpen : activeCandle.open;
+    const currentHigh = Number(Math.max(typeof stableHigh === 'number' ? stableHigh : openPrice, openPrice, livePrice).toFixed(precision));
+    const currentLow = Number(Math.min(typeof stableLow === 'number' ? stableLow : openPrice, openPrice, livePrice).toFixed(precision));
+
+    const updatedM1: SavedOtcCandle & { timestamp?: number } = {
+      time: currentBucketTime,
+      timestamp: currentBucketTime,
+      open: openPrice,
+      high: currentHigh,
+      low: currentLow,
+      close: livePrice,
+      volume: isCurrent ? (existingActive!.volume || 60) + 1 : 60
+    };
+    otcActiveCandlesCache.set(key, updatedM1);
+
+    // Update S1, S5, S15, S30 sub-minute candles strictly from this EXACT same livePrice
+    const tfCandles: Record<string, any> = {};
+    SUB_MINUTE_TFS.forEach(({ id, secs }) => {
+      const subStepMs = secs * 1000;
+      const subBucketTime = Math.floor(now / subStepMs) * subStepMs;
+      const subKey = `${cleanSym}_${id}`;
+      const prevSub = otcActiveCandlesCache.get(subKey);
+
+      let subOpen = livePrice;
+      if (prevSub && prevSub.time < subBucketTime) {
+        if (finalizeBucketIntoStore(subKey, prevSub)) {
+          closedAnyCandle = true;
+        }
+        subOpen = prevSub.close;
+      } else if (prevSub && prevSub.time === subBucketTime) {
+        subOpen = prevSub.open;
+      }
+
+      const isSameSub = Boolean(prevSub && prevSub.time === subBucketTime);
+      const subCandle = {
+        time: subBucketTime,
+        timestamp: subBucketTime,
+        open: subOpen,
+        high: Number(Math.max(isSameSub ? prevSub!.high : subOpen, subOpen, livePrice).toFixed(precision)),
+        low: Number(Math.min(isSameSub ? prevSub!.low : subOpen, subOpen, livePrice).toFixed(precision)),
         close: livePrice,
-        volume: (existingActive && existingActive.time === currentBucketTime) ? (existingActive.volume || 60) + 1 : 60
+        volume: isSameSub ? (prevSub!.volume || 20) + 1 : 20
       };
-
-      otcActiveCandlesCache.set(key, updatedActive);
-
-      tickPayload[cleanSym] = {
-        symbol: m.symbol,
-        price: livePrice,
-        activeCandle: updatedActive,
-        time: now
-      };
-      hasTicks = true;
+      otcActiveCandlesCache.set(subKey, subCandle);
+      tfCandles[id] = subCandle;
     });
 
-    // Broadcast sub-ticks to connected SSE stream clients if any
-    if (hasTicks && otcStreamClients.size > 0) {
-      const msg = `data: ${JSON.stringify({ type: 'SUB_TICK', serverTime: now, ticks: tickPayload })}\n\n`;
+    tickPayload[cleanSym] = {
+      symbol: m.symbol,
+      price: livePrice,
+      activeCandle: updatedM1,
+      tfCandles,
+      exposureEnabled: expActiveNow,
+      biasDirection: expBiasNow,
+      time: now
+    };
+    hasTicks = true;
+  });
+
+  if (closedAnyCandle) {
+    persistOtcClosedCandles();
+  }
+
+  if (hasTicks) {
+    otcTickSeq += 1;
+    lastOtcTickSnapshotPayload = tickPayload;
+
+    cachedLiveTicksJson = JSON.stringify({
+      success: true,
+      seq: otcTickSeq,
+      serverTime: now,
+      exposureControlEnabled: Boolean(otcControlConfig.exposureControlEnabled),
+      adminPredictorMode: Boolean(otcControlConfig.adminPredictorMode),
+      ticks: tickPayload
+    });
+
+    if (forceBroadcast && otcStreamClients.size > 0) {
+      const msg = `data: ${JSON.stringify({
+        type: 'SUB_TICK',
+        seq: otcTickSeq,
+        serverTime: now,
+        exposureControlEnabled: Boolean(otcControlConfig.exposureControlEnabled),
+        adminPredictorMode: Boolean(otcControlConfig.adminPredictorMode),
+        ticks: tickPayload
+      })}\n\n`;
       otcStreamClients.forEach(client => {
         try {
+          if (client.writableEnded || client.destroyed || client.writableLength > 65536) {
+            otcStreamClients.delete(client);
+            try { client.end(); } catch (_) {}
+            return;
+          }
           client.write(msg);
         } catch (_) {
           otcStreamClients.delete(client);
         }
       });
     }
-  } catch (_) {}
-}, 60);
+  }
+}
 
-// 2. Authoritative Bucket Completion & Persistence Engine (Every 1000ms):
-// Seamlessly freezes completed 1-minute candles with 0-gap guarantee into otcClosedCandlesStore
-setInterval(() => {
+// Pre-warm invariant M1 OTC history and live tick cache on server boot before accepting connections
+function warmOtcCandlesOnBoot() {
   try {
     const now = Date.now();
-    const timeframe = 'M1';
-    const tfSecs = 60;
-    const timeStepMs = 60000;
-    const currentBucketTime = Math.floor(now / timeStepMs) * timeStepMs;
-    const prevBucketTime = currentBucketTime - timeStepMs;
+    const currentM1Bucket = Math.floor(now / 60000) * 60000;
+    const prevM1Bucket = currentM1Bucket - 60000;
+    const startM1Bucket = currentM1Bucket - (1500 * 60000);
+    let anySeeded = false;
 
     marketsConfig.forEach(m => {
       const isOtc = m.category === 'otc' || (m.symbol && m.symbol.toUpperCase().includes('OTC')) || m.isRealMarket === false;
       if (!isOtc) return;
-
       const cleanSym = m.symbol.trim().toUpperCase();
-      const key = `${cleanSym}_${timeframe}`;
+      const key = `${cleanSym}_M1`;
       let map = otcClosedCandlesStore.get(key);
       if (!map) {
         map = new Map();
         otcClosedCandlesStore.set(key, map);
       }
-
-      // If previous bucket just finished and is not yet in map, freeze its final active candle:
-      if (!map.has(prevBucketTime)) {
-        const lastActive = otcActiveCandlesCache.get(key);
-        let finalized: SavedOtcCandle;
-
-        if (lastActive && lastActive.time === prevBucketTime) {
-          const body = Math.abs(lastActive.close - lastActive.open);
-          const isGold = (m.symbol || '').includes('GOLD') || (m.symbol || '').includes('XAU');
-          const isCrypto = (m.symbol || '').includes('BTC') || (m.symbol || '').includes('ETH');
-          const isJpy = (m.symbol || '').includes('JPY');
-          const pipStep = Math.pow(10, -(m.precision || 5));
-          const maxWick = isGold ? Math.max(body * 0.20, 0.25) : isCrypto ? Math.max(body * 0.20, (lastActive.open || 100) * 0.00025) : isJpy ? Math.max(body * 0.20, pipStep * 5.0) : Math.max(body * 0.20, pipStep * 4.0);
-
-          finalized = {
-            time: prevBucketTime,
-            open: lastActive.open,
-            high: Number(Math.min(Math.max(lastActive.open, lastActive.high, lastActive.close), Math.max(lastActive.open, lastActive.close) + maxWick).toFixed(m.precision || 5)),
-            low: Number(Math.max(Math.min(lastActive.open, lastActive.low, lastActive.close), Math.min(lastActive.open, lastActive.close) - maxWick).toFixed(m.precision || 5)),
-            close: lastActive.close,
-            volume: lastActive.volume || 100
-          };
-        } else {
-          let rollingOpen: number | undefined;
-          const prevPrevCandle = map.get(prevBucketTime - timeStepMs);
-          if (prevPrevCandle) {
-            rollingOpen = prevPrevCandle.close;
-          } else {
-            const prevHist = getDeterministicHistoricalCandle(m, prevBucketTime - timeStepMs, tfSecs);
-            rollingOpen = prevHist.close;
-          }
-          const hist = getDeterministicHistoricalCandle(m, prevBucketTime, tfSecs, rollingOpen);
-          const openVal = typeof rollingOpen === 'number' ? rollingOpen : hist.open;
-          finalized = {
-            time: prevBucketTime,
-            open: openVal,
-            high: hist.high,
-            low: hist.low,
-            close: hist.close,
-            volume: hist.volume || 100
-          };
-        }
-        map.set(prevBucketTime, finalized);
-        persistOtcClosedCandles();
+      if (fillDeterministicRangeAnchored(m, map, startM1Bucket, prevM1Bucket, 60)) {
+        anySeeded = true;
       }
-
-      // Continuous live trade exposure evaluation (5s loss shield for live accounts)
-      updateServerLiveExposureForSymbol(m.symbol);
     });
+
+    if (anySeeded) {
+      persistOtcClosedCandles();
+    }
+    stepServerOtcEngineTick(now, false);
+  } catch (err) {
+    console.warn('[Server] OTC boot warm notice:', err);
+  }
+}
+warmOtcCandlesOnBoot();
+
+// 1. High-Frequency (80ms) Authoritative Micro-Sub-Tick Real-Time Engine:
+// Drives M1 + S1/S5/S15/S30 simultaneously from ONE single server price stream
+// so thousands of phones globally render 100% identical candles, wicks, & live prices!
+setInterval(() => {
+  try {
+    stepServerOtcEngineTick(Date.now(), true);
   } catch (_) {}
-}, 1000);
+}, 80);
+
+// Shared 15-second SSE keepalive ping so mobile carrier proxies never drop idle streams
+setInterval(() => {
+  if (otcStreamClients.size === 0) return;
+  otcStreamClients.forEach(client => {
+    try {
+      if (client.writableEnded || client.destroyed) {
+        otcStreamClients.delete(client);
+        return;
+      }
+      client.write(': ping\n\n');
+    } catch (_) {
+      otcStreamClients.delete(client);
+    }
+  });
+}, 15000);
 
 app.get('/api/otc-candles/:symbol/:timeframe', (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     const rawSymbol = decodeURIComponent(req.params.symbol);
-    const timeframe = req.params.timeframe || 'M1';
-    const count = Math.min(1500, Math.max(500, parseInt(req.query.count as string) || 600));
+    const timeframe = (req.params.timeframe || 'M1').toUpperCase();
+    const count = Math.min(1500, Math.max(50, parseInt(req.query.count as string) || 600));
+    const beforeTimeRaw = req.query.beforeTime ? Number(req.query.beforeTime) : NaN;
+    const isScrollback = Number.isFinite(beforeTimeRaw) && beforeTimeRaw > 0;
 
     const market = marketsConfig.find(m => 
       m.symbol.toUpperCase() === rawSymbol.toUpperCase() || 
@@ -1979,106 +2404,168 @@ app.get('/api/otc-candles/:symbol/:timeframe', (req, res) => {
       return res.status(404).json({ error: 'Market not found' });
     }
 
-    updateServerLiveExposureForSymbol(market.symbol);
-
     const tfSecs = getTimeframeSeconds(timeframe);
     const timeStepMs = tfSecs * 1000;
     const now = Date.now();
     const currentBucketTime = Math.floor(now / timeStepMs) * timeStepMs;
-    const startBucket = currentBucketTime - (count * timeStepMs);
+
+    const endClosedBucket = isScrollback
+      ? (Math.floor((beforeTimeRaw - timeStepMs) / timeStepMs) * timeStepMs)
+      : (currentBucketTime - timeStepMs);
+    const startBucket = endClosedBucket - ((count - 1) * timeStepMs);
 
     const cleanSym = market.symbol.trim().toUpperCase();
     const key = `${cleanSym}_${timeframe}`;
+    const m1Key = `${cleanSym}_M1`;
     let map = otcClosedCandlesStore.get(key);
     if (!map) {
       map = new Map();
       otcClosedCandlesStore.set(key, map);
     }
 
-    const candles: any[] = [];
-    let rollingOpen: number | undefined;
+    let m1ClosedMap = otcClosedCandlesStore.get(m1Key);
+    if (!m1ClosedMap) {
+      m1ClosedMap = new Map();
+      otcClosedCandlesStore.set(m1Key, m1ClosedMap);
+    }
+    const m1Active = otcActiveCandlesCache.get(m1Key);
+    const isHigherThanM1 = tfSecs > 60;
 
-    for (let t = startBucket; t < currentBucketTime; t += timeStepMs) {
-      const existing = map.get(t);
-      if (existing) {
-        if (typeof rollingOpen === 'number' && existing.open !== rollingOpen) {
-          existing.open = rollingOpen;
-        }
-        const isGold = (market.symbol || '').includes('GOLD') || (market.symbol || '').includes('XAU');
-        const isCrypto = (market.symbol || '').includes('BTC') || (market.symbol || '').includes('ETH');
-        const isJpy = (market.symbol || '').includes('JPY');
-        const pipStep = Math.pow(10, -(market.precision || 5));
-        const body = Math.abs(existing.close - existing.open);
-        const maxBody = isGold ? 1.80 : isCrypto ? (existing.open || 100) * 0.0012 : isJpy ? pipStep * 45 : pipStep * 40;
-        if (body > maxBody) {
-          existing.close = existing.close > existing.open ? existing.open + maxBody : existing.open - maxBody;
-        }
-        const cleanBody = Math.abs(existing.close - existing.open);
-        const maxWick = isGold
-          ? Math.max(cleanBody * 0.20, 0.25)
-          : isCrypto
-            ? Math.max(cleanBody * 0.20, (existing.open || 100) * 0.00025)
-            : isJpy
-              ? Math.max(cleanBody * 0.20, pipStep * 5.0)
-              : Math.max(cleanBody * 0.20, pipStep * 4.0);
+    // Ensure M1 closed store covers the requested window using invariant UTC anchor
+    const m1Start = Math.floor(startBucket / 60000) * 60000;
+    const m1End = isHigherThanM1
+      ? Math.min(Math.floor(now / 60000) * 60000 - 60000, endClosedBucket + timeStepMs - 60000)
+      : Math.min(Math.floor(now / 60000) * 60000 - 60000, endClosedBucket);
+    if (fillDeterministicRangeAnchored(market, m1ClosedMap, m1Start, m1End, 60)) {
+      persistOtcClosedCandles();
+    }
 
-        existing.high = Number(Math.min(existing.high, Math.max(existing.open, existing.close) + maxWick).toFixed(market.precision || 5));
-        existing.low = Number(Math.max(existing.low, Math.min(existing.open, existing.close) - maxWick).toFixed(market.precision || 5));
-        map.set(t, existing);
-        candles.push(existing);
-        rollingOpen = existing.close;
-      } else {
-        const openPrice = typeof rollingOpen === 'number' ? rollingOpen : undefined;
-        const hist = getDeterministicHistoricalCandle(market, t, tfSecs, openPrice);
-        const newClosed: SavedOtcCandle = {
-          time: t,
-          open: hist.open,
-          high: hist.high,
-          low: hist.low,
-          close: hist.close,
-          volume: hist.volume || 100
-        };
-        map.set(t, newClosed);
-        candles.push(newClosed);
-        rollingOpen = newClosed.close;
+    let m1ByBucket: Map<number, SavedOtcCandle> | null = null;
+    if (isHigherThanM1) {
+      m1ByBucket = new Map();
+      m1ClosedMap.forEach((c, t) => m1ByBucket!.set(t, c));
+      if (!isScrollback && m1Active && typeof m1Active.time === 'number') {
+        m1ByBucket.set(m1Active.time, m1Active);
       }
     }
 
-    // Active forming candle at currentBucketTime with rollingOpen as stable anchor
-    let finalActiveCandle: any;
-    let finalLivePrice: number;
-    const cachedActive = otcActiveCandlesCache.get(key);
-    if (cachedActive && cachedActive.time === currentBucketTime) {
-      finalActiveCandle = { ...cachedActive };
-      if (typeof rollingOpen === 'number') {
-        finalActiveCandle.open = rollingOpen;
-        finalActiveCandle.high = Math.max(finalActiveCandle.high, finalActiveCandle.open, finalActiveCandle.close);
-        finalActiveCandle.low = Math.min(finalActiveCandle.low, finalActiveCandle.open, finalActiveCandle.close);
+    const candles: SavedOtcCandle[] = [];
+
+    if (timeframe === 'M1') {
+      for (let t = startBucket; t <= endClosedBucket; t += timeStepMs) {
+        const c = m1ClosedMap.get(t);
+        if (c) candles.push({ ...c });
       }
-      finalLivePrice = finalActiveCandle.close;
+    } else if (isHigherThanM1 && m1ByBucket) {
+      let rollingOpen: number | undefined;
+      for (let t = startBucket; t <= endClosedBucket; t += timeStepMs) {
+        const inWindow: SavedOtcCandle[] = [];
+        for (let m1T = t; m1T < t + timeStepMs; m1T += 60000) {
+          const mc = m1ByBucket.get(m1T);
+          if (mc) inWindow.push(mc);
+        }
+        if (inWindow.length > 0) {
+          const openVal = typeof rollingOpen === 'number' ? rollingOpen : inWindow[0].open;
+          let highVal = openVal;
+          let lowVal = openVal;
+          let volVal = 0;
+          inWindow.forEach(c => {
+            if (c.high > highVal) highVal = c.high;
+            if (c.low < lowVal) lowVal = c.low;
+            volVal += (c.volume || 100);
+          });
+          const closeVal = inWindow[inWindow.length - 1].close;
+          const agg: SavedOtcCandle = {
+            time: t,
+            open: openVal,
+            high: Math.max(highVal, openVal, closeVal),
+            low: Math.min(lowVal, openVal, closeVal),
+            close: closeVal,
+            volume: volVal
+          };
+          candles.push(agg);
+          rollingOpen = agg.close;
+        }
+      }
     } else {
-      const { activeCandle, livePrice } = getDeterministicActiveCandle(market, currentBucketTime, now, tfSecs, rollingOpen);
-      if (typeof rollingOpen === 'number') {
-        activeCandle.open = rollingOpen;
-        activeCandle.high = Math.max(activeCandle.high, activeCandle.open, activeCandle.close);
-        activeCandle.low = Math.min(activeCandle.low, activeCandle.open, activeCandle.close);
+      // Sub-minute timeframes (S1, S5, S15, S30): read recorded server bars + deterministic anchored backfill
+      fillDeterministicRangeAnchored(market, map, startBucket, endClosedBucket, tfSecs);
+      for (let t = startBucket; t <= endClosedBucket; t += timeStepMs) {
+        const c = map.get(t);
+        if (c) candles.push({ ...c });
       }
-      finalActiveCandle = activeCandle;
-      finalLivePrice = livePrice;
     }
-    candles.push(finalActiveCandle);
 
-    // Final zero-gap pass across all historical and active candles
+    // Active forming candle (only when not requesting older scrollback history)
+    let finalLivePrice: number = candles.length > 0 ? candles[candles.length - 1].close : market.basePrice;
+    if (!isScrollback) {
+      let finalActiveCandle: any;
+      const cachedActive = otcActiveCandlesCache.get(key);
+
+      if (isHigherThanM1 && m1ByBucket && m1Active) {
+        const inCurrentWindow: SavedOtcCandle[] = [];
+        for (let m1T = currentBucketTime; m1T <= m1Active.time; m1T += 60000) {
+          const mc = m1ByBucket.get(m1T);
+          if (mc) inCurrentWindow.push(mc);
+        }
+        const prevClose = candles.length > 0 ? candles[candles.length - 1].close : undefined;
+        const openVal = typeof prevClose === 'number'
+          ? prevClose
+          : (inCurrentWindow.length > 0 ? inCurrentWindow[0].open : m1Active.open);
+        let highVal = openVal;
+        let lowVal = openVal;
+        let volVal = 0;
+        inCurrentWindow.forEach(c => {
+          if (c.high > highVal) highVal = c.high;
+          if (c.low < lowVal) lowVal = c.low;
+          volVal += (c.volume || 60);
+        });
+        const closeVal = m1Active.close;
+        finalActiveCandle = {
+          time: currentBucketTime,
+          timestamp: currentBucketTime,
+          open: openVal,
+          high: Math.max(highVal, openVal, closeVal),
+          low: Math.min(lowVal, openVal, closeVal),
+          close: closeVal,
+          volume: volVal || 60
+        };
+        finalLivePrice = closeVal;
+      } else if (cachedActive && cachedActive.time === currentBucketTime) {
+        finalActiveCandle = { ...cachedActive };
+        finalLivePrice = finalActiveCandle.close;
+      } else {
+        stepServerOtcEngineTick(now, false);
+        const refreshed = otcActiveCandlesCache.get(key);
+        if (refreshed) {
+          finalActiveCandle = { ...refreshed };
+          finalLivePrice = refreshed.close;
+        } else {
+          const prevClose = candles.length > 0 ? candles[candles.length - 1].close : undefined;
+          const { activeCandle, livePrice } = getDeterministicActiveCandle(market, currentBucketTime, now, tfSecs, prevClose);
+          finalActiveCandle = activeCandle;
+          finalLivePrice = livePrice;
+        }
+      }
+      candles.push(finalActiveCandle);
+    }
+
+    // Gentle zero-gap check ONLY across same-era continuous candles (avoid stretching a giant bar across boot seam)
+    const maxSeamJump = Math.max(market.basePrice * 0.002, Math.pow(10, -(market.precision ?? 5)) * 80);
     for (let i = 1; i < candles.length; i++) {
-      candles[i].open = candles[i - 1].close;
-      candles[i].high = Math.max(candles[i].high, candles[i].open, candles[i].close);
-      candles[i].low = Math.min(candles[i].low, candles[i].open, candles[i].close);
+      const gap = Math.abs(candles[i].open - candles[i - 1].close);
+      if (gap > 0 && gap <= maxSeamJump) {
+        candles[i].open = candles[i - 1].close;
+        candles[i].high = Math.max(candles[i].high, candles[i].open, candles[i].close);
+        candles[i].low = Math.min(candles[i].low, candles[i].open, candles[i].close);
+      }
     }
 
     return res.json({
       success: true,
       symbol: market.symbol,
       timeframe,
+      seq: otcTickSeq,
       serverTime: now,
       livePrice: finalLivePrice,
       candles
@@ -2088,95 +2575,11 @@ app.get('/api/otc-candles/:symbol/:timeframe', (req, res) => {
   }
 });
 
-// Live Authoritative OTC Ticks for all markets to guarantee identical price across all phones & devices globally
+// Live Authoritative OTC Ticks (served from pre-serialized RAM snapshot — scales to thousands of clients with 0 CPU overhead)
 app.get('/api/otc/live-ticks', (_req, res) => {
-  try {
-    const now = Date.now();
-    const timeframe = 'M1';
-    const tfSecs = 60;
-    const timeStepMs = 60000;
-    const currentBucketTime = Math.floor(now / timeStepMs) * timeStepMs;
-
-    const ticks: Record<string, {
-      symbol: string;
-      price: number;
-      activeCandle: SavedOtcCandle;
-      exposureEnabled: boolean;
-      biasDirection: 'UP' | 'DOWN' | 'NEUTRAL';
-    }> = {};
-
-    marketsConfig.forEach(m => {
-      const isOtc = m.category === 'otc' || (m.symbol && m.symbol.toUpperCase().includes('OTC')) || m.isRealMarket === false;
-      if (isOtc) {
-        updateServerLiveExposureForSymbol(m.symbol);
-        const cleanSym = m.symbol.trim().toUpperCase();
-        const key = `${cleanSym}_${timeframe}`;
-        let map = otcClosedCandlesStore.get(key);
-        if (!map) {
-          map = new Map();
-          otcClosedCandlesStore.set(key, map);
-        }
-        const cachedActive = otcActiveCandlesCache.get(key);
-        let finalActive: any;
-        let finalPrice: number;
-
-        if (cachedActive && cachedActive.time === currentBucketTime) {
-          finalActive = cachedActive;
-          finalPrice = cachedActive.close;
-        } else {
-          let rollingOpen: number | undefined;
-          const prevCandle = map.get(currentBucketTime - timeStepMs);
-          if (prevCandle) {
-            rollingOpen = prevCandle.close;
-          } else if (cachedActive && cachedActive.time === currentBucketTime - timeStepMs) {
-            rollingOpen = cachedActive.close;
-            map.set(cachedActive.time, { ...cachedActive });
-            persistOtcClosedCandles();
-          } else {
-            const hist = getDeterministicHistoricalCandle(m, currentBucketTime - timeStepMs, tfSecs);
-            rollingOpen = hist.close;
-          }
-          const { activeCandle, livePrice } = getDeterministicActiveCandle(m, currentBucketTime, now, tfSecs, rollingOpen);
-          finalPrice = livePrice;
-          finalActive = {
-            time: activeCandle.time,
-            open: typeof rollingOpen === 'number' ? rollingOpen : activeCandle.open,
-            high: activeCandle.high,
-            low: activeCandle.low,
-            close: livePrice,
-            volume: activeCandle.volume || 100
-          };
-          otcActiveCandlesCache.set(key, finalActive);
-        }
-
-        const exp = getMarketLiveExposure(m.symbol);
-        ticks[cleanSym] = {
-          symbol: m.symbol,
-          price: finalPrice,
-          activeCandle: {
-            time: finalActive.time,
-            open: finalActive.open,
-            high: finalActive.high,
-            low: finalActive.low,
-            close: finalActive.close,
-            volume: finalActive.volume || 100
-          },
-          exposureEnabled: Boolean(exp && exp.enabled),
-          biasDirection: exp ? exp.biasDirection : 'NEUTRAL'
-        };
-      }
-    });
-
-    return res.json({
-      success: true,
-      serverTime: now,
-      exposureControlEnabled: Boolean(otcControlConfig.exposureControlEnabled),
-      adminPredictorMode: Boolean(otcControlConfig.adminPredictorMode),
-      ticks
-    });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  return res.send(cachedLiveTicksJson);
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -2213,27 +2616,41 @@ app.get('/api/admin/prediction-feed', (req, res) => {
 
 // ─────────────────────────────────────────────────────────────
 // REAL-TIME OTC TICK STREAM (Server-Sent Events)
-// Synchronizes micro-ticks across mobile, desktop & web clients with <100ms latency
+// Synchronizes micro-ticks across thousands of mobile, desktop & web clients with <100ms latency
 // ─────────────────────────────────────────────────────────────
 app.get('/api/otc/stream', (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.setHeader('Content-Encoding', 'none');
   res.setHeader('Access-Control-Allow-Origin', '*');
+  try {
+    req.socket?.setKeepAlive?.(true, 15000);
+    req.socket?.setNoDelay?.(true);
+    res.socket?.setNoDelay?.(true);
+    req.setTimeout?.(0);
+    res.setTimeout?.(0);
+  } catch (_) {}
   if (typeof (res as any).flushHeaders === 'function') {
     (res as any).flushHeaders();
   }
 
   otcStreamClients.add(res);
 
-  // Send initial state snapshot
+  // Send immediate authoritative snapshot on connect
   try {
-    const snapshot: Record<string, any> = {};
-    otcActiveCandlesCache.forEach((candle, key) => {
-      snapshot[key] = candle;
-    });
-    res.write(`data: ${JSON.stringify({ type: 'SNAPSHOT', serverTime: Date.now(), data: snapshot })}\n\n`);
-  } catch (_) {}
+    res.write(`data: ${JSON.stringify({
+      type: 'SNAPSHOT',
+      seq: otcTickSeq,
+      serverTime: Date.now(),
+      exposureControlEnabled: Boolean(otcControlConfig.exposureControlEnabled),
+      adminPredictorMode: Boolean(otcControlConfig.adminPredictorMode),
+      ticks: lastOtcTickSnapshotPayload
+    })}\n\n`);
+  } catch (_) {
+    otcStreamClients.delete(res);
+  }
 
   req.on('close', () => {
     otcStreamClients.delete(res);
@@ -3357,22 +3774,36 @@ app.post('/api/withdrawals/:id/reject', (req, res) => {
 // ─────────────────────────────────────────────────────────────
 
 const USER_TRADES_FILE = path.join(DATA_DIR, 'user_trades_store.json');
+let userTradesMemoryCache: any[] | null = null;
+let saveTradesDebounceTimer: any = null;
 
 function getStoredUserTradesServer(): any[] {
+  if (userTradesMemoryCache !== null) return userTradesMemoryCache;
   try {
     if (fs.existsSync(USER_TRADES_FILE)) {
       const raw = fs.readFileSync(USER_TRADES_FILE, 'utf8');
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) {
+        userTradesMemoryCache = parsed;
+        return userTradesMemoryCache;
+      }
     }
   } catch (_) {}
-  return [];
+  userTradesMemoryCache = [];
+  return userTradesMemoryCache;
 }
 
 function saveStoredUserTradesServer(trades: any[]) {
-  try {
-    fs.writeFileSync(USER_TRADES_FILE, JSON.stringify(trades.slice(0, 5000), null, 2), 'utf8');
-  } catch (_) {}
+  userTradesMemoryCache = trades.slice(0, 5000);
+  if (saveTradesDebounceTimer) return;
+  saveTradesDebounceTimer = setTimeout(() => {
+    saveTradesDebounceTimer = null;
+    try {
+      if (userTradesMemoryCache) {
+        fs.writeFileSync(USER_TRADES_FILE, JSON.stringify(userTradesMemoryCache, null, 2), 'utf8');
+      }
+    } catch (_) {}
+  }, 500);
 }
 
 // GET user KYC status for cross-device synchronization (phone <-> desktop)
@@ -3609,6 +4040,8 @@ app.get('/api/otc/exposure', (_req, res) => {
       heavySide: 'UP' | 'DOWN' | 'NONE';
       heavyEntryPrice: number;
       minRemainingSec: number;
+      minRemainingMs: number;
+      activeDurationMs: number;
       enabled: boolean;
       totalOrders: number;
       orders: any[];
@@ -3626,6 +4059,8 @@ app.get('/api/otc/exposure', (_req, res) => {
           heavySide: 'NONE',
           heavyEntryPrice: 0,
           minRemainingSec: 99999,
+          minRemainingMs: 99999000,
+          activeDurationMs: 60000,
           enabled: otcControlConfig.exposureControlEnabled,
           totalOrders: 0,
           orders: []
@@ -3635,10 +4070,16 @@ app.get('/api/otc/exposure', (_req, res) => {
       const amount = Number(t.amount || t.investment || 0);
       const isUp = t.type === 'CALL' || t.type === 'UP' || t.type === 'BUY';
       const isDown = t.type === 'PUT' || t.type === 'DOWN' || t.type === 'SELL';
-      const remSec = t.expiryTimestamp ? Math.max(0, Math.ceil((t.expiryTimestamp - now) / 1000)) : 60;
+      const remMs = t.expiryTimestamp ? Math.max(0, t.expiryTimestamp - now) : ((t.expirySeconds || 60) * 1000);
+      const remSec = Math.max(0, Math.ceil(remMs / 1000));
+      const durMs = t.expiryTimestamp && t.openTimestamp
+        ? Math.max(4000, t.expiryTimestamp - t.openTimestamp)
+        : Math.max(4000, (t.expirySeconds || 60) * 1000);
 
-      if (remSec < exposureBySymbol[sym].minRemainingSec) {
+      if (remMs < exposureBySymbol[sym].minRemainingMs) {
+        exposureBySymbol[sym].minRemainingMs = remMs;
         exposureBySymbol[sym].minRemainingSec = remSec;
+        exposureBySymbol[sym].activeDurationMs = durMs;
       }
 
       const isDemo = t.accountType === 'demo' || t.isDemo === true;
@@ -3666,25 +4107,31 @@ app.get('/api/otc/exposure', (_req, res) => {
     });
 
     // Calculate final bias direction and heavyEntryPrice:
-    // If UP volume > DOWN volume (or only UP took trades): Bias is DOWN (drive market DOWN to settle UP in loss)
-    // If DOWN volume > UP volume (or only DOWN took trades): Bias is UP (drive market UP to settle DOWN in loss)
+    // If UP volume > DOWN volume: Bias is DOWN (drive market DOWN to settle UP in loss)
+    // If DOWN volume > UP volume: Bias is UP (drive market UP to settle DOWN in loss)
     Object.values(exposureBySymbol).forEach(exp => {
       exp.netExposure = exp.upVolume - exp.downVolume;
-      exp.enabled = Boolean(otcControlConfig.exposureControlEnabled);
 
-      if (exp.enabled && exp.upVolume > exp.downVolume) {
+      if (otcControlConfig.exposureControlEnabled && exp.upVolume > exp.downVolume) {
         exp.biasDirection = 'DOWN';
         exp.heavySide = 'UP';
-        const upOrders = exp.orders.filter(o => o.type === 'UP' && o.accountType !== 'demo' && typeof o.entryPrice === 'number');
+        const upOrders = exp.orders.filter(o => o.type === 'UP' && o.accountType === 'live' && typeof o.entryPrice === 'number');
         exp.heavyEntryPrice = upOrders.length > 0 
           ? upOrders.reduce((sum, o) => sum + (o.entryPrice * o.amount), 0) / (exp.upVolume || 1)
           : 0;
-      } else if (exp.enabled && exp.downVolume > exp.upVolume) {
+      } else if (otcControlConfig.exposureControlEnabled && exp.downVolume > exp.upVolume) {
         exp.biasDirection = 'UP';
         exp.heavySide = 'DOWN';
-        const downOrders = exp.orders.filter(o => o.type === 'DOWN' && o.accountType !== 'demo' && typeof o.entryPrice === 'number');
+        const downOrders = exp.orders.filter(o => o.type === 'DOWN' && o.accountType === 'live' && typeof o.entryPrice === 'number');
         exp.heavyEntryPrice = downOrders.length > 0 
           ? downOrders.reduce((sum, o) => sum + (o.entryPrice * o.amount), 0) / (exp.downVolume || 1)
+          : 0;
+      } else if (otcControlConfig.exposureControlEnabled && exp.upVolume > 0 && exp.upVolume === exp.downVolume) {
+        exp.biasDirection = 'DOWN';
+        exp.heavySide = 'UP';
+        const upOrders = exp.orders.filter(o => o.type === 'UP' && o.accountType === 'live' && typeof o.entryPrice === 'number');
+        exp.heavyEntryPrice = upOrders.length > 0 
+          ? upOrders.reduce((sum, o) => sum + (o.entryPrice * o.amount), 0) / (exp.upVolume || 1)
           : 0;
       } else {
         exp.biasDirection = 'NEUTRAL';
@@ -3692,7 +4139,8 @@ app.get('/api/otc/exposure', (_req, res) => {
         exp.heavyEntryPrice = 0;
       }
 
-      // Also register this symbol's exposure in server memory
+      exp.enabled = Boolean(otcControlConfig.exposureControlEnabled && exp.biasDirection !== 'NEUTRAL');
+
       setMarketLiveExposure(exp.symbol, {
         symbol: exp.symbol,
         upVolume: exp.upVolume,
@@ -3702,6 +4150,8 @@ app.get('/api/otc/exposure', (_req, res) => {
         heavySide: exp.heavySide,
         heavyEntryPrice: exp.heavyEntryPrice,
         minRemainingSec: exp.minRemainingSec,
+        minRemainingMs: exp.minRemainingMs < 99999000 ? exp.minRemainingMs : 60000,
+        activeDurationMs: exp.activeDurationMs,
         enabled: exp.enabled,
         activeOrdersCount: exp.totalOrders
       });
@@ -3749,6 +4199,7 @@ app.post('/api/otc/admin-mode', (req, res) => {
     }
     otcControlConfig.lastUpdated = Date.now();
     persistOtcControlConfig();
+    pushOtcControlsToFirestore(otcControlConfig);
 
     // Immediately refresh in-memory exposure for all OTC markets so market reaction is instant
     marketsConfig.forEach(m => {
@@ -3837,12 +4288,13 @@ app.get('/api/otc/forecast/:symbol/:timeframe', (req, res) => {
 });
 
 // Background Authoritative Trade Settlement Sweeper
-// Guarantees all expired OTC trades settle authoritatively according to 5S Loss mode
+// Guarantees all expired OTC trades settle authoritatively matching the steered candle
 setInterval(() => {
   try {
     const allTrades = getStoredUserTradesServer();
     const now = Date.now();
     let hasChanges = false;
+    const touchedSymbols = new Set<string>();
     const ADMIN_EMAILS = ['naymulh1000@gmail.com', 'admin@fxby24.com', 'admin@forextradepro.com'];
 
     allTrades.forEach(t => {
@@ -3851,26 +4303,45 @@ setInterval(() => {
 
       const isAdminUser = Boolean(t.userEmail && ADMIN_EMAILS.includes(t.userEmail.toLowerCase().trim()));
       const amount = Number(t.amount || t.investment || 0);
+      const cleanSym = (t.symbol || '').toUpperCase().trim();
+      const key = `${cleanSym}_M1`;
+      const active = otcActiveCandlesCache.get(key);
+      const mkt = marketsConfig.find(m => m.symbol.trim().toUpperCase() === cleanSym);
+      const precision = mkt?.precision ?? (cleanSym.includes('JPY') ? 3 : (cleanSym.includes('BTC') || cleanSym.includes('ETH') || cleanSym.includes('GOLD') || cleanSym.includes('XAU')) ? 2 : 5);
+      const pStep = Math.pow(10, -precision);
+      const liveClose = (active && typeof active.close === 'number') ? active.close : (t.currentPrice || t.entryPrice);
+      const isUp = t.type === 'CALL' || t.type === 'UP' || t.type === 'BUY';
+      const isDown = t.type === 'PUT' || t.type === 'DOWN' || t.type === 'SELL';
 
-      // If 5S Loss is enabled and not an admin account: Settle as LOST (strictly for LIVE balance, NEVER demo or bonus!)
+      // If 5S Loss is enabled and not an admin account: settle LIVE trades consistently with steered exposure!
+      // DEMO and BONUS accounts settle strictly naturally!
       const isLiveAccount = t.accountType === 'live' && !t.isDemo && t.accountType !== 'demo' && t.accountType !== 'bonus';
-      if (otcControlConfig.exposureControlEnabled && !isAdminUser && isLiveAccount) {
+      const exp = getMarketLiveExposure(t.symbol);
+      const isHeavySideTrade = exp && exp.enabled && exp.biasDirection !== 'NEUTRAL'
+        ? ((exp.biasDirection === 'DOWN' && isUp) || (exp.biasDirection === 'UP' && isDown))
+        : true;
+
+      if (otcControlConfig.exposureControlEnabled && !isAdminUser && isLiveAccount && isHeavySideTrade) {
+        let settledPrice = liveClose;
+        if (isUp && settledPrice >= t.entryPrice) {
+          settledPrice = Number((t.entryPrice - pStep * 8).toFixed(precision));
+        } else if (isDown && settledPrice <= t.entryPrice) {
+          settledPrice = Number((t.entryPrice + pStep * 8).toFixed(precision));
+        }
         t.status = 'LOST';
         t.outcome = 'LOST';
+        t.exitPrice = settledPrice;
+        t.closePrice = settledPrice;
         t.pnl = -amount;
         t.returnPayout = 0;
         t.closeTimestamp = t.expiryTimestamp;
         t.closeTime = new Date(t.expiryTimestamp).toISOString();
         t.updatedAt = now;
         hasChanges = true;
+        if (t.symbol) touchedSymbols.add(t.symbol);
       } else {
-        // Natural settlement for all other cases (when 5S Loss is OFF, or for Demo & Bonus accounts):
-        const cleanSym = (t.symbol || '').toUpperCase().trim();
-        const key = `${cleanSym}_M1`;
-        const active = otcActiveCandlesCache.get(key);
-        const exitPrice = (active && typeof active.close === 'number') ? active.close : (t.currentPrice || t.entryPrice);
-        const isUp = t.type === 'CALL' || t.type === 'UP' || t.type === 'BUY';
-        const isDown = t.type === 'PUT' || t.type === 'DOWN' || t.type === 'SELL';
+        // Natural settlement for all other cases (when 5S Loss is OFF, or Demo/Bonus, or Admin, or light counter side):
+        const exitPrice = liveClose;
         const isWin = (isUp && exitPrice > t.entryPrice) || (isDown && exitPrice < t.entryPrice);
         const isDraw = exitPrice === t.entryPrice;
         const payout = (t.payoutPercent || 92) / 100;
@@ -3897,14 +4368,16 @@ setInterval(() => {
         t.closeTime = new Date(t.expiryTimestamp).toISOString();
         t.updatedAt = now;
         hasChanges = true;
+        if (t.symbol) touchedSymbols.add(t.symbol);
       }
     });
 
     if (hasChanges) {
       saveStoredUserTradesServer(allTrades);
+      touchedSymbols.forEach(sym => updateServerLiveExposureForSymbol(sym));
     }
   } catch (_) {}
-}, 2000);
+}, 1000);
 
 // ─────────────────────────────────────────────────────────────
 // VITE MIDDLEWARE & SERVER STARTUP

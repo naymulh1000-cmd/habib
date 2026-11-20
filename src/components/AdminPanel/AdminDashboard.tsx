@@ -352,10 +352,33 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [forecastCandles, setForecastCandles] = useState<any[]>([]);
 
   useEffect(() => {
+    let unsub = () => {};
+    try {
+      unsub = onSnapshot(doc(db, 'settings', 'otc_controls'), (snap) => {
+        if (snap.exists()) {
+          const d = snap.data();
+          if (d && typeof d.exposureControlEnabled === 'boolean') {
+            setExposureControlEnabled(d.exposureControlEnabled);
+            try {
+              localStorage.setItem('forex_admin_exposure_control', String(d.exposureControlEnabled));
+            } catch (_) {}
+          }
+          if (d && typeof d.adminPredictorMode === 'boolean') {
+            setAdminPredictorMode(d.adminPredictorMode);
+            try {
+              localStorage.setItem('forex_admin_radar_active', String(d.adminPredictorMode));
+            } catch (_) {}
+          }
+        }
+      }, () => {});
+    } catch (_) {}
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
     let inFlight = false;
-    let failCount = 0;
     const fetchExposure = async () => {
-      if (inFlight || failCount >= 2) return;
+      if (inFlight) return;
       inFlight = true;
       try {
         const data = await safeFetchJson<{
@@ -364,59 +387,50 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           activeLiveOrdersCount?: number;
           adminPredictorMode?: boolean;
           exposureControlEnabled?: boolean;
-        }>('/api/otc/exposure', 600);
+        }>('/api/otc/exposure', 3000);
 
         if (data && data.success) {
-          failCount = 0;
           setOtcExposureData(data.marketsExposure || {});
           setActiveLiveOtcCount(data.activeLiveOrdersCount || 0);
-          setAdminPredictorMode(Boolean(data.adminPredictorMode));
-          setExposureControlEnabled(Boolean(data.exposureControlEnabled));
-        } else {
-          failCount++;
+          if (typeof data.adminPredictorMode === 'boolean') {
+            setAdminPredictorMode(data.adminPredictorMode);
+          }
+          if (typeof data.exposureControlEnabled === 'boolean') {
+            setExposureControlEnabled(data.exposureControlEnabled);
+          }
         }
       } catch (_) {
-        failCount++;
       } finally {
         inFlight = false;
       }
     };
 
     fetchExposure();
-    const timer = setInterval(() => {
-      if (failCount < 2) fetchExposure();
-    }, 15000);
+    const timer = setInterval(fetchExposure, 5000);
     return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
     let inFlight = false;
-    let failCount = 0;
     const fetchForecast = async () => {
-      if (!selectedForecastSymbol || inFlight || failCount >= 2) return;
+      if (!selectedForecastSymbol || inFlight) return;
       inFlight = true;
       try {
         const data = await safeFetchJson<{
           forecast?: any[];
-        }>(`/api/otc/forecast/${encodeURIComponent(selectedForecastSymbol)}/M1?count=5`, 600);
+        }>(`/api/otc/forecast/${encodeURIComponent(selectedForecastSymbol)}/M1?count=5`, 3000);
 
         if (data && Array.isArray(data.forecast)) {
-          failCount = 0;
           setForecastCandles(data.forecast);
-        } else {
-          failCount++;
         }
       } catch (_) {
-        failCount++;
       } finally {
         inFlight = false;
       }
     };
 
     fetchForecast();
-    const timer = setInterval(() => {
-      if (failCount < 2) fetchForecast();
-    }, 15000);
+    const timer = setInterval(fetchForecast, 10000);
     return () => clearInterval(timer);
   }, [selectedForecastSymbol]);
 
@@ -432,6 +446,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       if (newMode) localStorage.setItem('forex_admin_exposure_control', 'false');
     } catch (_) {}
     addAuditLog(`${newMode ? 'Enabled Admin 5-Candle Future Predictor Mode (Disabled 5s Loss Shield)' : 'Disabled Admin 5-Candle Future Predictor Mode'}`);
+
+    // Atomic sync to Firestore settings/otc_controls for instant cross-device propagation
+    try {
+      setDoc(doc(db, 'settings', 'otc_controls'), {
+        adminPredictorMode: newMode,
+        exposureControlEnabled: newExposureState,
+        updatedAt: Date.now(),
+        updatedBy: 'admin_panel'
+      }, { merge: true }).catch(() => {});
+    } catch (_) {}
 
     // Non-blocking safe notification to backend with 3000ms timeout
     safeFetch('/api/otc/admin-mode', {
@@ -453,6 +477,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       if (newExposureState) localStorage.setItem('forex_admin_radar_active', 'false');
     } catch (_) {}
     addAuditLog(`${newExposureState ? 'Enabled 5s Loss Shield (Disabled Radar Mode)' : 'Disabled 5s Loss Shield'}`);
+
+    // Atomic sync to Firestore settings/otc_controls for instant cross-device propagation
+    try {
+      setDoc(doc(db, 'settings', 'otc_controls'), {
+        exposureControlEnabled: newExposureState,
+        adminPredictorMode: newPredictorMode,
+        updatedAt: Date.now(),
+        updatedBy: 'admin_panel'
+      }, { merge: true }).catch(() => {});
+    } catch (_) {}
 
     // Non-blocking safe notification to backend with 3000ms timeout
     safeFetch('/api/otc/admin-mode', {
@@ -3443,7 +3477,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     <span>Master Branding & Global Logo Control</span>
                   </h3>
                   <p className="text-xs text-gray-400 mt-1">
-                    Manage the official Forex Trade Pro master logo shown across the landing page, login screen, terminal, and emails.
+                    Manage the official FXBY24 master logo shown across the landing page, login screen, terminal, and emails.
                   </p>
                 </div>
 
